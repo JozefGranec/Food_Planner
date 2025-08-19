@@ -1,5 +1,14 @@
 # put this at the top of pages/cookbook.py
-import sys
+
+import sys, os
+print("CWD:", os.getcwd())
+print("sys.path[0]:", sys.path[0])
+print("Full sys.path:")
+for p in sys.path:
+    print("   ", p)
+
+from db import init_db, add_recipe, list_recipes, get_recipe
+
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # add project root to import path
 
