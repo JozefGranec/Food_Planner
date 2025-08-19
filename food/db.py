@@ -17,7 +17,7 @@ def _connect() -> sqlite3.Connection:
 def _table_info(conn: sqlite3.Connection, table: str):
     return conn.execute(f"PRAGMA table_info({table});").fetchall()
 
-def init_db() -> None:
+def create_db_and_tables() -> None:
     with _connect() as conn:
         conn.execute(
             """
