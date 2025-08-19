@@ -8,6 +8,18 @@ from repository.recipes_repo import (
 
 UNITS = ["g", "kg", "ml", "l", "pcs", "tbsp", "tsp", "cup", "pinch"]
 
+# services/db.py already has:
+# def vacuum():
+#     with get_session() as s:
+#         s.exec(text("VACUUM"))
+
+# In pages/cookbook.py's expander, add:
+from services.db import vacuum
+
+if st.button("Run VACUUM (optimize)"):
+    vacuum()
+    st.success("VACUUM completed.")
+
 def _img_to_b64(file):
     if not file:
         return None
