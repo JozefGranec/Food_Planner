@@ -1,0 +1,25 @@
+[
+  {
+    "id": "spaghetti_bolognese",
+    "title": "Spaghetti Bolognese",
+    "ingredients": [
+      {"name": "spaghetti", "qty": 400, "unit": "g"},
+      {"name": "ground beef", "qty": 500, "unit": "g"},
+      {"name": "tomato passata", "qty": 700, "unit": "ml"},
+      {"name": "onion", "qty": 1, "unit": "pc"},
+      {"name": "garlic", "qty": 3, "unit": "clove"}
+    ],
+    "steps": ["Boil pasta", "Brown beef", "Add passata + simmer", "Serve"]
+  },
+  {
+    "id": "chicken_salad",
+    "title": "Chicken Salad",
+    "ingredients": [
+      {"name": "chicken breast", "qty": 400, "unit": "g"},
+      {"name": "lettuce", "qty": 1, "unit": "head"},
+      {"name": "tomato", "qty": 2, "unit": "pc"},
+      {"name": "olive oil", "qty": 2, "unit": "tbsp"}
+    ],
+    "steps": ["Grill chicken", "Chop veg", "Dress + toss"]
+  }
+]
