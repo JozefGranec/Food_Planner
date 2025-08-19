@@ -15,6 +15,38 @@ def _img_to_b64(file):
 
 def render():
     st.header("🍳 Cook Book")
+    from services.db import export_db_bytes, restore_db_bytes
+from repository.recipes_repo import invalidate_recipe_cache
+
+with st.expander("📦 Backup / Restore database", expanded=False):
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown("**Download a backup of your cookbook.db**")
+        if st.button("Create fresh backup"):
+            # (Optional) you can trigger a quick cache invalidate before backup if you want
+            pass
+        st.download_button(
+            "⬇️ Download cookbook.db",
+            data=export_db_bytes(),
+            file_name="cookbook.db",
+            mime="application/octet-stream",
+            use_container_width=True,
+        )
+
+    with c2:
+        st.markdown("**Restore from a .db file**")
+        up = st.file_uploader("Upload a SQLite .db backup", type=["db", "sqlite", "sqlite3"], accept_multiple_files=False)
+        st.caption("⚠️ Restoring will overwrite the current database file.")
+        if up and st.button("Restore backup", type="primary", use_container_width=True):
+            ok = restore_db_bytes(up.getvalue())
+            if ok:
+                invalidate_recipe_cache()
+                st.success("Database restored. Reloading…")
+                st.experimental_rerun()
+            else:
+                st.error("Restore failed.")
+                
     tab_list, tab_add = st.tabs(["Recipes", "Add new"])
 
     # ----- LIST -----
