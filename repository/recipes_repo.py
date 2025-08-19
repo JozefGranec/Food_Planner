@@ -74,3 +74,6 @@ def delete_recipe(recipe_id: int):
         s.delete(r)  # cascades to ingredients
         s.commit()
         invalidate_recipe_cache()
+
+def invalidate_recipe_cache():
+    list_recipes_cached.clear()
