@@ -1,8 +1,9 @@
+# food/db.py
+
 from pathlib import Path
 import sqlite3
 from typing import List, Tuple, Optional, Dict, Any
 
-# DB path: ./data/food_planner.db
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "food_planner.db"
@@ -17,20 +18,15 @@ def _table_info(conn: sqlite3.Connection, table: str):
     return conn.execute(f"PRAGMA table_info({table});").fetchall()
 
 def init_db() -> None:
-    """
-    Create tables if they don't exist. If an older schema exists that enforced
-    NOT NULL on ingredients/steps, transparently migrate it.
-    """
     with _connect() as conn:
-        # Create with the relaxed (optional) ingredients/steps
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS recipes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
                 description TEXT,
-                ingredients TEXT,        -- optional
-                steps TEXT,              -- optional
+                ingredients TEXT,
+                steps TEXT,
                 tags TEXT,
                 prep_minutes INTEGER DEFAULT 0,
                 cook_minutes INTEGER DEFAULT 0,
@@ -41,16 +37,11 @@ def init_db() -> None:
         )
         conn.commit()
 
-        # Detect old schema: ingredients or steps had NOT NULL
+        # (Optional) old-schema migration kept from earlier messages — safe to omit if fresh DB
         info = _table_info(conn, "recipes")
         if info:
-            # columns: cid, name, type, notnull (0/1), dflt_value, pk
             col = {row[1]: row for row in info}
-            needs_migration = False
-            for name in ("ingredients", "steps"):
-                if name in col and col[name][3] == 1:  # notnull == 1
-                    needs_migration = True
-
+            needs_migration = any(col.get(n, (None, None, None, 0))[3] == 1 for n in ("ingredients", "steps"))
             if needs_migration:
                 conn.execute("BEGIN;")
                 conn.execute(
@@ -93,7 +84,6 @@ def add_recipe(
     cook_minutes: int = 0,
     servings: int = 1,
 ) -> int:
-    """Insert a recipe and return its new id."""
     with _connect() as conn:
         cur = conn.execute(
             """
@@ -116,8 +106,42 @@ def add_recipe(
         conn.commit()
         return cur.lastrowid
 
+def update_recipe(
+    recipe_id: int,
+    title: str,
+    description: str = "",
+    ingredients: str = "",
+    steps: str = "",
+    tags: str = "",
+    prep_minutes: int = 0,
+    cook_minutes: int = 0,
+    servings: int = 1,
+) -> int:
+    """Update a recipe. Returns number of rows affected (0 or 1)."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE recipes
+            SET title = ?, description = ?, ingredients = ?, steps = ?, tags = ?,
+                prep_minutes = ?, cook_minutes = ?, servings = ?
+            WHERE id = ?
+            """,
+            (
+                (title or "").strip(),
+                (description or "").strip(),
+                (ingredients or "").strip(),
+                (steps or "").strip(),
+                (tags or "").strip(),
+                int(prep_minutes or 0),
+                int(cook_minutes or 0),
+                int(servings or 1),
+                int(recipe_id),
+            ),
+        )
+        conn.commit()
+        return cur.rowcount
+
 def list_recipes(limit: int = 100, search: Optional[str] = None) -> List[Tuple]:
-    """Return rows for display. If search is provided, filter by title or tags."""
     with _connect() as conn:
         if search:
             like = f"%{search}%"
