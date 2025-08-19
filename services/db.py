@@ -1,105 +1,102 @@
-# services/db.py
-import streamlit as st
-import os
+from pathlib import Path
 import sqlite3
-import tempfile
-import shutil
+from typing import List, Tuple, Optional, Dict, Any
 
-from sqlalchemy.engine import Engine
-from sqlalchemy import event, text
-from sqlmodel import SQLModel, create_engine, Session
+# Where the DB file lives (./data/food_planner.db)
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DATA_DIR / "food_planner.db"
 
-DB_URL = "sqlite:///./cookbook.db"
+def _connect() -> sqlite3.Connection:
+    # check_same_thread=False is helpful with Streamlit
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    return conn
 
-@st.cache_resource
-def get_engine() -> Engine:
-    engine = create_engine(
-        DB_URL,
-        echo=False,
-        connect_args={"check_same_thread": False},  # required for SQLite with Streamlit threads
-        pool_pre_ping=True,
-    )
+def init_db() -> None:
+    """Create tables if they don't exist."""
+    with _connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recipes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT,
+                ingredients TEXT NOT NULL,   -- newline separated
+                steps TEXT NOT NULL,         -- newline separated
+                tags TEXT,                   -- comma separated
+                prep_minutes INTEGER DEFAULT 0,
+                cook_minutes INTEGER DEFAULT 0,
+                servings INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            """
+        )
+        conn.commit()
 
-    # Apply SQLite pragmas for performance and reliability
-    @event.listens_for(engine, "connect")
-    def set_sqlite_pragma(dbapi_connection, _):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL;")
-        cursor.execute("PRAGMA synchronous=NORMAL;")
-        cursor.execute("PRAGMA foreign_keys=ON;")
-        cursor.close()
+def add_recipe(
+    title: str,
+    description: str,
+    ingredients: str,
+    steps: str,
+    tags: str = "",
+    prep_minutes: int = 0,
+    cook_minutes: int = 0,
+    servings: int = 1,
+) -> int:
+    """Insert a recipe and return its new id."""
+    with _connect() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO recipes
+                (title, description, ingredients, steps, tags, prep_minutes, cook_minutes, servings)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (title, description, ingredients, steps, tags, prep_minutes, cook_minutes, servings),
+        )
+        conn.commit()
+        return cur.lastrowid
 
-    return engine
+def list_recipes(limit: int = 100, search: Optional[str] = None) -> List[Tuple]:
+    """Return rows for display. If search is provided, filter by title or tags."""
+    with _connect() as conn:
+        if search:
+            like = f"%{search}%"
+            rows = conn.execute(
+                """
+                SELECT id, title, tags, servings, prep_minutes, cook_minutes, created_at
+                FROM recipes
+                WHERE title LIKE ? OR tags LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (like, like, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, title, tags, servings, prep_minutes, cook_minutes, created_at
+                FROM recipes
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    return rows
 
-def get_session() -> Session:
-    return Session(get_engine())
-
-def create_db_and_tables():
-    # Import models here to avoid circular imports
-    from models.recipe import Recipe, Ingredient
-    SQLModel.metadata.create_all(get_engine())
-
-def vacuum():
-    # Optional maintenance; call rarely
-    with get_session() as s:
-        s.exec(text("VACUUM"))
-
-DB_FILE = "./cookbook.db"  # same file used in DB_URL ("sqlite:///./cookbook.db")
-
-def get_db_path() -> str:
-    return DB_FILE
-
-def export_db_bytes() -> bytes:
-    """
-    Create a consistent snapshot of the SQLite file and return its bytes.
-    Uses the SQLite backup API to avoid partial copies while the app is running.
-    """
-    src_path = get_db_path()
-    # ensure file exists (tables are created at startup)
-    if not os.path.exists(src_path):
-        # create empty db so the download isn't missing
-        create_db_and_tables()
-
-    # create a temp backup file via SQLite backup API
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        tmp_path = tmp.name
-    try:
-        with sqlite3.connect(src_path) as src, sqlite3.connect(tmp_path) as dst:
-            src.backup(dst)  # consistent snapshot
-        with open(tmp_path, "rb") as f:
-            data = f.read()
-        return data
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-
-def restore_db_bytes(data: bytes) -> bool:
-    """
-    Replace the current cookbook.db with the uploaded bytes.
-    We dispose the SQLAlchemy engine so no handles are open, then overwrite the file,
-    and finally clear the cached engine so Streamlit re-creates it on next use.
-    """
-    # 1) dispose existing engine/handles
-    eng = get_engine()
-    eng.dispose()
-    try:
-        get_engine.clear()  # clear the @st.cache_resource so a fresh engine is created
-    except Exception:
-        pass
-
-    # 2) write uploaded bytes to a temp file, then atomically copy over the DB file
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        tmp.write(data)
-        tmp.flush()
-        tmp_path = tmp.name
-
-    try:
-        shutil.copyfile(tmp_path, get_db_path())
-        return True
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
+def get_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, title, description, ingredients, steps, tags,
+                   prep_minutes, cook_minutes, servings, created_at
+            FROM recipes WHERE id = ?
+            """,
+            (recipe_id,),
+        ).fetchone()
+    if not row:
+        return None
+    keys = ["id","title","description","ingredients","steps","tags",
+            "prep_minutes","cook_minutes","servings","created_at"]
+    return dict(zip(keys, row))
