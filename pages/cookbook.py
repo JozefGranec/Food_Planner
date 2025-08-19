@@ -1,9 +1,15 @@
 # pages/cookbook.py  (or pages/1_Cook_Book.py)
 
 import streamlit as st
-from food.db import init_db, add_recipe, list_recipes, get_recipe, update_recipe
+from food.db import (
+    init_db,
+    add_recipe,
+    list_recipes,
+    get_recipe,
+    update_recipe,
+)
 
-# Ensure DB exists / migrated
+# Ensure DB exists / migrated on each load
 init_db()
 
 st.title("🍳 Cook Book")
@@ -12,7 +18,7 @@ st.title("🍳 Cook Book")
 if "edit_id" not in st.session_state:
     st.session_state.edit_id = None
 
-# ---------- New Recipe Form ----------
+# ========== CREATE ==========
 with st.form("new_recipe_form", clear_on_submit=True):
     st.subheader("Add a new recipe")
 
@@ -47,8 +53,8 @@ with st.form("new_recipe_form", clear_on_submit=True):
                 new_id = add_recipe(
                     title=title.strip(),
                     description=(description or "").strip(),
-                    ingredients=(ingredients or "").strip(),
-                    steps=(steps or "").strip(),
+                    ingredients=(ingredients or "").strip(),   # optional
+                    steps=(steps or "").strip(),               # optional
                     tags=(tags or "").strip(),
                     prep_minutes=int(prep_minutes or 0),
                     cook_minutes=int(cook_minutes or 0),
@@ -61,7 +67,7 @@ with st.form("new_recipe_form", clear_on_submit=True):
 
 st.divider()
 
-# ---------- Edit Panel (appears when user clicks Edit) ----------
+# ========== EDIT PANEL ==========
 if st.session_state.edit_id is not None:
     rid = st.session_state.edit_id
     rec = get_recipe(rid)
@@ -73,19 +79,19 @@ if st.session_state.edit_id is not None:
 
         with st.form("edit_recipe_form"):
             etitle = st.text_input("Title *", value=rec["title"])
-            edescription = st.text_area("Short Description", value=rec["description"] or "")
-            eingredients = st.text_area("Ingredients (one per line, optional)", value=rec["ingredients"] or "")
-            esteps = st.text_area("Steps (one per line, optional)", value=rec["steps"] or "")
+            edescription = st.text_area("Short Description", value=rec.get("description") or "")
+            eingredients = st.text_area("Ingredients (one per line, optional)", value=rec.get("ingredients") or "")
+            esteps = st.text_area("Steps (one per line, optional)", value=rec.get("steps") or "")
 
             col1, col2, col3 = st.columns(3)
             with col1:
-                e_prep = st.number_input("Prep (min)", min_value=0, step=5, value=int(rec["prep_minutes"] or 0))
+                e_prep = st.number_input("Prep (min)", min_value=0, step=5, value=int(rec.get("prep_minutes") or 0))
             with col2:
-                e_cook = st.number_input("Cook (min)", min_value=0, step=5, value=int(rec["cook_minutes"] or 0))
+                e_cook = st.number_input("Cook (min)", min_value=0, step=5, value=int(rec.get("cook_minutes") or 0))
             with col3:
-                e_serv = st.number_input("Servings", min_value=1, step=1, value=int(rec["servings"] or 1))
+                e_serv = st.number_input("Servings", min_value=1, step=1, value=int(rec.get("servings") or 1))
 
-            e_tags = st.text_input("Tags (comma separated, optional)", value=rec["tags"] or "")
+            e_tags = st.text_input("Tags (comma separated, optional)", value=rec.get("tags") or "")
 
             c1, c2 = st.columns(2)
             save_edit = c1.form_submit_button("Save changes ✅")
@@ -120,6 +126,7 @@ if st.session_state.edit_id is not None:
                 st.session_state.edit_id = None
                 st.rerun()
 
+# ========== LIST / SEARCH ==========
 st.subheader("Your recipes")
 search = st.text_input("Search (title or tags)", key="recipe_search")
 rows = list_recipes(limit=200, search=(search.strip() or None))
