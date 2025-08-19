@@ -17,26 +17,24 @@ def render():
     st.header("🍳 Cook Book")
     tab_list, tab_add = st.tabs(["Recipes", "Add new"])
 
-    # --- LIST TAB ---
+    # ----- LIST -----
     with tab_list:
         top1, top2 = st.columns([2, 1])
         q = top1.text_input("Search by name…", placeholder="e.g., Pancakes")
         if top2.button("Refresh"):
-            # force refresh cached list
             list_recipes_cached.clear()
 
         recipes = list_recipes_cached(q)
+        if q:
+            ql = q.lower()
+            recipes = [
+                r for r in recipes
+                if (ql in r.name.lower()) or any(ql in i.name.lower() for i in r.ingredients or [])
+            ]
+
         if not recipes:
             st.info("No recipes yet. Add your first one in the **Add new** tab.")
         else:
-            # Client-side ingredient filter for query (optional)
-            if q:
-                ql = q.lower()
-                recipes = [
-                    r for r in recipes
-                    if (ql in r.name.lower()) or any(ql in i.name.lower() for i in r.ingredients or [])
-                ]
-
             cols = st.columns(3)
             for i, r in enumerate(recipes):
                 with cols[i % 3]:
@@ -52,7 +50,7 @@ def render():
                         st.success("Deleted.")
                         st.experimental_rerun()
 
-    # --- ADD TAB ---
+    # ----- ADD -----
     with tab_add:
         st.subheader("Add New Recipe")
         with st.form("add_recipe", clear_on_submit=True):
@@ -80,22 +78,22 @@ def render():
                     st.error("Please provide a recipe name."); st.stop()
                 if not instructions.strip():
                     st.error("Please provide instructions."); st.stop()
-                ingredients = []
+
+                ings = []
                 for _, row in grid.iterrows():
                     n = (row.get("name") or "").strip()
                     if not n: continue
                     amt = float(row.get("amount") or 0.0)
                     unit = (row.get("unit") or "pcs").strip()
-                    ingredients.append({"name": n, "amount": amt, "unit": unit})
-                rid = create_recipe(name, instructions, ingredients, _img_to_b64(img_file))
+                    ings.append({"name": n, "amount": amt, "unit": unit})
+                rid = create_recipe(name, instructions, ings, _img_to_b64(img_file))
                 st.success(f"Added **{name}**.")
-                _view_edit_dialog(rid)  # open editor immediately
+                _view_edit_dialog(rid)  # open editor
 
 def _view_edit_dialog(recipe_id: int):
     r = get_recipe(recipe_id)
     if not r:
-        st.error("Recipe not found.")
-        return
+        st.error("Recipe not found."); return
 
     with st.expander(f"✏️ Edit: {r.name}", expanded=True):
         with st.form(f"edit_{recipe_id}"):
@@ -103,7 +101,6 @@ def _view_edit_dialog(recipe_id: int):
             img_file = st.file_uploader("Replace picture (optional)", type=["png","jpg","jpeg","webp"])
             instructions = st.text_area("Preparation instructions*", value=r.instructions, height=180)
 
-            # Build editable grid from current ingredients
             df = pd.DataFrame(
                 [{"name": i.name, "amount": i.amount, "unit": i.unit} for i in (r.ingredients or [])]
             )
@@ -121,7 +118,7 @@ def _view_edit_dialog(recipe_id: int):
 
             c1, c2 = st.columns(2)
             save = c1.form_submit_button("Save changes", type="primary")
-            back = c2.form_submit_button("Close")
+            close = c2.form_submit_button("Close")
 
             if save:
                 ings = []
@@ -135,6 +132,6 @@ def _view_edit_dialog(recipe_id: int):
                 ok = update_recipe(recipe_id, name, instructions, ings, img_b64)
                 if ok:
                     st.success("Saved.")
-                    list_recipes_cached.clear()  # refresh cache
+                    list_recipes_cached.clear()
                 else:
                     st.error("Failed to save.")
