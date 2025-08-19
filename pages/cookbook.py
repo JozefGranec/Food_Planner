@@ -2,7 +2,7 @@
 import streamlit as st
 from food.db import init_db, add_recipe, list_recipes, get_recipe, update_recipe
 
-# Ensure DB exists
+# Initialize DB only (no Streamlit code here)
 init_db()
 
 def render():
@@ -12,7 +12,7 @@ def render():
     if "edit_id" not in st.session_state:
         st.session_state.edit_id = None
 
-    # --- CREATE NEW RECIPE ---
+    # ========== CREATE NEW RECIPE ==========
     with st.form("new_recipe_form", clear_on_submit=True):
         st.subheader("Add a new recipe")
 
@@ -38,6 +38,7 @@ def render():
         tags = st.text_input("Tags (comma separated, optional)", placeholder="e.g., chicken, quick", key="new_tags")
 
         submitted = st.form_submit_button("Save Recipe")
+
         if submitted:
             if not title.strip():
                 st.error("Please provide a title.")
@@ -54,13 +55,13 @@ def render():
                         servings=int(servings or 1),
                     )
                     st.success(f"Recipe saved ✅ (ID: {new_id})")
-                    st.rerun()
+                    st.experimental_rerun()
                 except Exception as e:
                     st.error(f"Could not save recipe: {e}")
 
     st.divider()
 
-    # --- EDIT EXISTING RECIPE ---
+    # ========== EDIT PANEL ==========
     if st.session_state.edit_id is not None:
         rid = st.session_state.edit_id
         rec = get_recipe(rid)
@@ -111,17 +112,15 @@ def render():
                             else:
                                 st.info("No changes detected.")
                             st.session_state.edit_id = None
-                            st.rerun()
+                            st.experimental_rerun()
                         except Exception as e:
                             st.error(f"Could not update recipe: {e}")
 
                 if cancel_edit:
                     st.session_state.edit_id = None
-                    st.rerun()
+                    st.experimental_rerun()
 
-    st.divider()
-
-    # --- LIST AND SEARCH ---
+    # ========== LIST / SEARCH ==========
     st.subheader("Your recipes")
     search = st.text_input("Search (title or tags)", key="recipe_search")
     rows = list_recipes(limit=200, search=(search.strip() or None))
@@ -133,12 +132,12 @@ def render():
             total_time = (rprep or 0) + (rcook or 0)
             header = f"{rtitle}  •  {rserv} servings  •  {total_time} min total"
             with st.expander(header):
+                st.caption(f"Tags: {rtags or '—'}  |  Added: {rcreated}")
+
                 r = get_recipe(rid)
                 if not r:
                     st.warning("Could not load this recipe’s details.")
                     continue
-
-                st.caption(f"Tags: {rtags or '—'}  |  Added: {rcreated}")
 
                 if (r.get("description") or "").strip():
                     st.markdown("**Notes**")
@@ -150,9 +149,11 @@ def render():
 
                 if (r.get("steps") or "").strip():
                     st.markdown("**Steps**")
-                    st.markdown("\n".join(f"{i+1}. {line}" for i, line in enumerate([ln for ln in r["steps"].splitlines() if ln.strip()])))
+                    st.markdown("\n".join(
+                        f"{i+1}. {line}" for i, line in enumerate([ln for ln in r["steps"].splitlines() if ln.strip()])
+                    ))
 
                 # Edit button for this recipe
                 if st.button("✏️ Edit this recipe", key=f"edit_btn_{rid}"):
                     st.session_state.edit_id = rid
-                    st.rerun()
+                    st.experimental_rerun()
