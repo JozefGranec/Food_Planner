@@ -1,17 +1,9 @@
 # pages/cookbook.py  (or pages/1_Cook_Book.py)
 
 import streamlit as st
+from food.db import init_db, add_recipe, list_recipes, get_recipe  # db.py moved to food/
 
-# --- Robust imports: first try package layout, then fallback to root-level db.py
-try:
-    from food.db import init_db, add_recipe, list_recipes, get_recipe
-except ModuleNotFoundError:
-    import sys
-    from pathlib import Path
-    sys.path.append(str(Path(__file__).resolve().parents[1]))
-    from food.db import init_db, add_recipe, list_recipes, get_recipe
-
-# Ensure DB exists / is migrated each time the page loads
+# Make sure the DB (and any migration) is ready each time the page loads
 init_db()
 
 st.title("🍳 Cook Book")
@@ -75,4 +67,28 @@ if not rows:
 else:
     for rid, rtitle, rtags, rserv, rprep, rcook, rcreated in rows:
         total_time = (rprep or 0) + (rcook or 0)
-        header = f"{rtitle}  •
+        header = f"{rtitle}  •  {rserv} servings  •  {total_time} min total"
+        with st.expander(header):
+            st.caption(f"Tags: {rtags or '—'}  |  Added: {rcreated}")
+
+            r = get_recipe(rid)
+            if not r:
+                st.warning("Could not load this recipe’s details.")
+                continue
+
+            if (r.get("description") or "").strip():
+                st.markdown("**Notes**")
+                st.write(r["description"])
+
+            if (r.get("ingredients") or "").strip():
+                st.markdown("**Ingredients**")
+                st.markdown("\n".join(
+                    f"- {line}" for line in r["ingredients"].splitlines() if line.strip()
+                ))
+
+            if (r.get("steps") or "").strip():
+                st.markdown("**Steps**")
+                st.markdown("\n".join(
+                    f"{i+1}. {line}"
+                    for i, line in enumerate([ln for ln in r["steps"].splitlines() if ln.strip()])
+                ))
