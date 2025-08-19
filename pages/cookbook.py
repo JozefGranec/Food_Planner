@@ -9,7 +9,7 @@ except ModuleNotFoundError:
     import sys
     from pathlib import Path
     sys.path.append(str(Path(__file__).resolve().parents[1]))
-    from db import init_db, add_recipe, list_recipes, get_recipe
+    from food.db import init_db, add_recipe, list_recipes, get_recipe
 
 # Ensure DB exists / is migrated each time the page loads
 init_db()
