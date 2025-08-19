@@ -1,203 +1,79 @@
-# pages/cookbook.py
-import base64
-import pandas as pd
 import streamlit as st
+from db import init_db, add_recipe, list_recipes, get_recipe
 
-from repository.recipes_repo import (
-    list_recipes_cached,
-    get_recipe,
-    create_recipe,
-    update_recipe,
-    delete_recipe,
-    invalidate_recipe_cache,
-)
-from services.db import export_db_bytes, restore_db_bytes  # backup/restore helpers
-# (Optional) VACUUM maintenance:
-# from services.db import vacuum
+# Ensure the DB and table exist every time this page loads
+init_db()
 
-UNITS = ["g", "kg", "ml", "l", "pcs", "tbsp", "tsp", "cup", "pinch"]
+st.title("🍳 Cook Book")
 
+with st.form("new_recipe_form", clear_on_submit=True):
+    st.subheader("Add a new recipe")
+    title = st.text_input("Title *", placeholder="e.g., Lemon Garlic Chicken")
+    description = st.text_area("Short Description", placeholder="A bright, zesty weeknight chicken.")
+    ingredients = st.text_area(
+        "Ingredients * (one per line)",
+        placeholder="2 chicken breasts\n1 lemon (zest & juice)\n2 cloves garlic, minced\n1 tbsp olive oil\nSalt & pepper"
+    )
+    steps = st.text_area(
+        "Steps * (one per line)",
+        placeholder="Preheat oven to 200°C\nMix marinade\nCoat chicken\nBake 20–25 min"
+    )
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        prep_minutes = st.number_input("Prep (min)", min_value=0, step=5, value=10)
+    with col2:
+        cook_minutes = st.number_input("Cook (min)", min_value=0, step=5, value=20)
+    with col3:
+        servings = st.number_input("Servings", min_value=1, step=1, value=2)
 
-def _img_to_b64(file):
-    if not file:
-        return None
-    return base64.b64encode(file.read()).decode("utf-8")
+    tags = st.text_input("Tags (comma separated)", placeholder="chicken, quick, weeknight")
 
+    submitted = st.form_submit_button("Save Recipe")
 
-def render():
-    st.header("🍳 Cook Book")
-
-    # ----------------- Backup / Restore DB -----------------
-    with st.expander("📦 Backup / Restore database", expanded=False):
-        c1, c2 = st.columns(2)
-
-        # Download a consistent snapshot of cookbook.db
-        with c1:
-            st.markdown("**Download a backup of your `cookbook.db`**")
-            st.download_button(
-                "⬇️ Download cookbook.db",
-                data=export_db_bytes(),
-                file_name="cookbook.db",
-                mime="application/octet-stream",
-                use_container_width=True,
-            )
-            # Optional maintenance (uncomment if you imported vacuum)
-            # if st.button("Run VACUUM (optimize)"):
-            #     vacuum()
-            #     st.success("VACUUM completed.")
-
-        # Restore from an uploaded .db file (overwrites current DB)
-        with c2:
-            st.markdown("**Restore from a `.db` file**")
-            up = st.file_uploader(
-                "Upload a SQLite `.db` backup",
-                type=["db", "sqlite", "sqlite3"],
-                accept_multiple_files=False,
-            )
-            st.caption("⚠️ Restoring will overwrite the current database file.")
-            if up and st.button("Restore backup", type="primary", use_container_width=True):
-                ok = restore_db_bytes(up.getvalue())
-                if ok:
-                    invalidate_recipe_cache()
-                    st.success("Database restored. Reloading…")
-                    st.experimental_rerun()
-                else:
-                    st.error("Restore failed.")
-
-    # ----------------- Tabs: List / Add -----------------
-    tab_list, tab_add = st.tabs(["Recipes", "Add new"])
-
-    # ===== LIST TAB =====
-    with tab_list:
-        top1, top2 = st.columns([2, 1])
-        q = top1.text_input("Search by name or ingredient…", placeholder="e.g., Pancakes or flour")
-        if top2.button("Refresh"):
-            list_recipes_cached.clear()
-
-        recipes = list_recipes_cached(q)
-        # Client-side ingredient filtering as well (name filter already in query)
-        if q:
-            ql = q.lower()
-            recipes = [
-                r for r in recipes
-                if (ql in r.name.lower()) or any(ql in i.name.lower() for i in (r.ingredients or []))
-            ]
-
-        if not recipes:
-            st.info("No recipes yet. Add your first one in the **Add new** tab.")
+    if submitted:
+        # Basic validation
+        if not title.strip():
+            st.error("Please provide a title.")
+        elif not ingredients.strip():
+            st.error("Please provide at least one ingredient.")
+        elif not steps.strip():
+            st.error("Please provide at least one step.")
         else:
-            cols = st.columns(3)
-            for i, r in enumerate(recipes):
-                with cols[i % 3]:
-                    st.markdown(f"### {r.name}")
-                    if r.image_b64:
-                        st.image(base64.b64decode(r.image_b64), use_container_width=True)
-                    st.caption(f"{len(r.ingredients or [])} ingredients")
-                    c1, c2 = st.columns(2)
-                    if c1.button("View / Edit", key=f"v{r.id}"):
-                        _view_edit_dialog(r.id)
-                    if c2.button("Delete", key=f"d{r.id}"):
-                        delete_recipe(r.id)
-                        st.success("Deleted.")
-                        st.experimental_rerun()
+            try:
+                new_id = add_recipe(
+                    title=title.strip(),
+                    description=description.strip(),
+                    ingredients=ingredients.strip(),
+                    steps=steps.strip(),
+                    tags=tags.strip(),
+                    prep_minutes=int(prep_minutes),
+                    cook_minutes=int(cook_minutes),
+                    servings=int(servings),
+                )
+                st.success(f"Recipe saved ✅ (ID: {new_id})")
+                st.rerun()  # refresh list below
+            except Exception as e:
+                # If something goes wrong, show it
+                st.error(f"Could not save recipe: {e}")
 
-    # ===== ADD TAB =====
-    with tab_add:
-        st.subheader("Add New Recipe")
-        with st.form("add_recipe", clear_on_submit=True):
-            name = st.text_input("Recipe name*", placeholder="e.g., Pancakes")
-            img_file = st.file_uploader("Food picture (optional)", type=["png", "jpg", "jpeg", "webp"])
-            instructions = st.text_area("Preparation instructions*", height=180)
+st.divider()
+st.subheader("Your recipes")
 
-            st.markdown("**Ingredients**")
-            df_init = pd.DataFrame([{"name": "", "amount": 0.0, "unit": "g"} for _ in range(5)])
-            grid = st.data_editor(
-                df_init,
-                num_rows="dynamic",
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "name": st.column_config.TextColumn("Ingredient"),
-                    "amount": st.column_config.NumberColumn("Amount", step=0.1, format="%.3f"),
-                    "unit": st.column_config.SelectboxColumn("Unit", options=UNITS),
-                },
-            )
+search = st.text_input("Search (title or tags)", key="recipe_search")
+rows = list_recipes(limit=200, search=search.strip() or None)
 
-            c1, c2 = st.columns(2)
-            save = c1.form_submit_button("Save recipe", type="primary")
-            cancel = c2.form_submit_button("Cancel")
-
-            if save:
-                if not name.strip():
-                    st.error("Please provide a recipe name.")
-                    st.stop()
-                if not instructions.strip():
-                    st.error("Please provide instructions.")
-                    st.stop()
-
-                ings = []
-                for _, row in grid.iterrows():
-                    n = (row.get("name") or "").strip()
-                    if not n:
-                        continue
-                    amt = float(row.get("amount") or 0.0)
-                    unit = (row.get("unit") or "pcs").strip()
-                    ings.append({"name": n, "amount": amt, "unit": unit})
-
-                rid = create_recipe(name, instructions, ings, _img_to_b64(img_file))
-                st.success(f"Added **{name}**.")
-                _view_edit_dialog(rid)  # open editor immediately
-
-
-def _view_edit_dialog(recipe_id: int):
-    """Inline expander to view/edit a single recipe."""
-    r = get_recipe(recipe_id)
-    if not r:
-        st.error("Recipe not found.")
-        return
-
-    with st.expander(f"✏️ Edit: {r.name}", expanded=True):
-        with st.form(f"edit_{recipe_id}"):
-            name = st.text_input("Recipe name*", value=r.name)
-            img_file = st.file_uploader("Replace picture (optional)", type=["png", "jpg", "jpeg", "webp"])
-            instructions = st.text_area("Preparation instructions*", value=r.instructions, height=180)
-
-            df = pd.DataFrame(
-                [{"name": i.name, "amount": i.amount, "unit": i.unit} for i in (r.ingredients or [])]
-            )
-            if df.empty:
-                df = pd.DataFrame([{"name": "", "amount": 0.0, "unit": "g"}])
-
-            edited = st.data_editor(
-                df,
-                num_rows="dynamic",
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "name": st.column_config.TextColumn("Ingredient"),
-                    "amount": st.column_config.NumberColumn("Amount", step=0.1, format="%.3f"),
-                    "unit": st.column_config.SelectboxColumn("Unit", options=UNITS),
-                },
-            )
-
-            col1, col2 = st.columns(2)
-            save = col1.form_submit_button("Save changes", type="primary")
-            close = col2.form_submit_button("Close")
-
-            if save:
-                ings = []
-                for _, row in edited.iterrows():
-                    n = (row.get("name") or "").strip()
-                    if not n:
-                        continue
-                    amt = float(row.get("amount") or 0.0)
-                    unit = (row.get("unit") or "pcs").strip()
-                    ings.append({"name": n, "amount": amt, "unit": unit})
-
-                img_b64 = _img_to_b64(img_file) if img_file else None
-                ok = update_recipe(recipe_id, name, instructions, ings, img_b64)
-                if ok:
-                    st.success("Saved.")
-                    list_recipes_cached.clear()
-                else:
-                    st.error("Failed to save.")
+if not rows:
+    st.info("No recipes found yet. Add your first one above.")
+else:
+    for rid, rtitle, rtags, rserv, rprep, rcook, rcreated in rows:
+        with st.expander(f"{rtitle}  •  {rserv} servings  •  {rprep+rcook} min total"):
+            st.caption(f"Tags: {rtags or '—'}  |  Added: {rcreated}")
+            r = get_recipe(rid)
+            if r:
+                st.markdown("**Ingredients**")
+                st.markdown("\n".join(f"- {line}" for line in r["ingredients"].splitlines()))
+                st.markdown("**Steps**")
+                st.markdown("\n".join(f"{i+1}. {line}" for i, line in enumerate(r["steps"].splitlines())))
+                if r["description"]:
+                    st.markdown("**Notes**")
+                    st.write(r["description"])
