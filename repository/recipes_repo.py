@@ -1,23 +1,21 @@
 # repository/recipes_repo.py
 from typing import List, Optional
-from sqlmodel import select
+from sqlmodel import select, delete
 from models.recipe import Recipe, Ingredient
 from services.db import get_session
 import streamlit as st
 
-# Cache list queries (invalidate manually after writes)
 @st.cache_data(ttl=30, show_spinner=False)
 def list_recipes_cached(q: str | None = None) -> List[Recipe]:
     with get_session() as s:
         stmt = select(Recipe).order_by(Recipe.created_at.desc())
         if q:
             ql = f"%{q.lower()}%"
-            # name filter only; ingredient filter done client-side for simplicity
             stmt = select(Recipe).where(Recipe.name.ilike(ql)).order_by(Recipe.created_at.desc())
         results = s.exec(stmt).all()
-        # Eager-load ingredients
+        # force-load ingredients relationship
         for r in results:
-            r.ingredients  # touch relationship
+            _ = r.ingredients
         return results
 
 def invalidate_recipe_cache():
@@ -27,7 +25,7 @@ def get_recipe(recipe_id: int) -> Optional[Recipe]:
     with get_session() as s:
         obj = s.get(Recipe, recipe_id)
         if obj:
-            obj.ingredients  # load
+            _ = obj.ingredients
         return obj
 
 def create_recipe(name: str, instructions: str, ingredients: list[dict], image_b64: str | None) -> int:
@@ -46,7 +44,7 @@ def create_recipe(name: str, instructions: str, ingredients: list[dict], image_b
         invalidate_recipe_cache()
         return r.id
 
-def update_recipe(recipe_id: int, name: str, instructions: str, ingredients: list[dict], image_b64: str | None):
+def update_recipe(recipe_id: int, name: str, instructions: str, ingredients: list[dict], image_b64: str | None) -> bool:
     with get_session() as s:
         r = s.get(Recipe, recipe_id)
         if not r:
@@ -55,9 +53,8 @@ def update_recipe(recipe_id: int, name: str, instructions: str, ingredients: lis
         r.instructions = instructions.strip()
         if image_b64 is not None:
             r.image_b64 = image_b64
-        # Replace ingredients
-        s.exec(select(Ingredient).where(Ingredient.recipe_id == recipe_id))
-        s.query(Ingredient).filter(Ingredient.recipe_id == recipe_id).delete()  # sqlalchemy query path
+        # replace ingredients
+        s.exec(delete(Ingredient).where(Ingredient.recipe_id == recipe_id))
         for ing in ingredients:
             s.add(Ingredient(
                 recipe_id=recipe_id,
@@ -74,6 +71,6 @@ def delete_recipe(recipe_id: int):
         r = s.get(Recipe, recipe_id)
         if not r:
             return
-        s.delete(r)  # cascade deletes ingredients
+        s.delete(r)  # cascades to ingredients
         s.commit()
         invalidate_recipe_cache()
