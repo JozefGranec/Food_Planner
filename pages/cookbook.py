@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # add project root to import path
 
 import streamlit as st
-from db import init_db, add_recipe, list_recipes, get_recipe
+from food.db import init_db, add_recipe, list_recipes, get_recipe
 
 # Ensure the DB and table exist every time this page loads
 init_db()
