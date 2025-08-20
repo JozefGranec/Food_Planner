@@ -24,7 +24,7 @@ st.markdown(
             top: 0;
             z-index: 9999;
             background-color: white;   /* white banner */
-            padding: 15px 0;
+            padding: 10px 0;
             border-bottom: 1px solid #e5e7eb;
             text-align: center;        /* center content */
         }
@@ -68,6 +68,7 @@ with tab3:
     food_plan.render()
 with tab4:
     shopping_list.render()
+
 
 
 
