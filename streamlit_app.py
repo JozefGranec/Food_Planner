@@ -5,7 +5,7 @@ from pages import household, cookbook, food_plan, shopping_list  # each must exp
 
 # --- Paths ---
 APP_DIR = Path(__file__).parent
-LOGO_PATH = APP_DIR / "pictures" / "Shop_n_Home.jpeg"
+LOGO_PATH = APP_DIR / "pictures" / "Shop_n_Home.jpeg"  # <-- updated to .jpeg
 
 # --- Page config ---
 st.set_page_config(
@@ -14,20 +14,27 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- Custom CSS for banner ---
+# --- Custom CSS for sticky banner ---
 st.markdown(
     """
     <style>
         .banner {
-            background-color: #f8f9fa;   /* light gray background */
-            padding: 15px 0;
+            position: sticky;       /* makes it stick while scrolling */
+            top: 0;
+            z-index: 9999;          /* stays on top */
+            background-color: #f8f9fa;
+            padding: 14px 0;
+            border-bottom: 1px solid #e5e7eb;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.06);
             text-align: center;
-            border-bottom: 2px solid #ddd;
         }
         .banner img {
-            max-width: 300px;   /* adjust logo size */
+            max-width: 300px;       /* adjust as needed */
+            width: 100%;
             height: auto;
         }
+        /* Optional: reduce padding at very top */
+        .block-container { padding-top: 0.5rem; }
     </style>
     """,
     unsafe_allow_html=True
