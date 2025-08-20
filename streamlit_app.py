@@ -10,11 +10,11 @@ LOGO_PATH = APP_DIR / "pictures" / "Shop_n_Home.jpeg"  # <-- JPEG logo
 # --- Page config ---
 st.set_page_config(
     page_title="Food Planner",
-    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🍽️",  # favicon
+    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🍽️",
     layout="wide"
 )
 
-# --- Custom CSS for sticky banner ---
+# --- Custom CSS for sticky white banner ---
 st.markdown(
     """
     <style>
@@ -22,10 +22,9 @@ st.markdown(
             position: sticky;
             top: 0;
             z-index: 9999;
-            background-color: #f8f9fa;
-            padding: 10px 0;
+            background-color: white;   /* white background */
+            padding: 15px 0;
             border-bottom: 1px solid #e5e7eb;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.06);
             text-align: center;
         }
     </style>
@@ -33,18 +32,10 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# --- Header (use Streamlit image, not file:// HTML) ---
+# --- Header ---
 if LOGO_PATH.exists():
-    banner = f"""
-    <div class="sticky-banner">
-        <div style="display:flex; justify-content:center; align-items:center;">
-            <img src="data:image/jpeg;base64,{Path(LOGO_PATH).read_bytes().hex()}" />
-        </div>
-    </div>
-    """
-    # Instead of embedding raw bytes as hex, better way:
     st.markdown('<div class="sticky-banner">', unsafe_allow_html=True)
-    st.image(str(LOGO_PATH), use_container_width=False, width=250)
+    st.image(str(LOGO_PATH), use_container_width=False, width=300)  # centered automatically
     st.markdown('</div>', unsafe_allow_html=True)
 else:
     st.title("🍽️ Food Planner")
