@@ -1,193 +1,211 @@
 # food/db.py
+"""
+SQLite helpers for the Food Planner app.
 
-from pathlib import Path
+Exports:
+- init_db()
+- add_recipe(title, ingredients="", instructions="")
+- list_recipes(search: str | None = None) -> list[dict]
+- get_recipe(recipe_id: int) -> dict | None
+- update_recipe(recipe_id: int, title=None, ingredients=None, instructions=None)
+- delete_recipe(recipe_id: int)
+- count_recipes() -> int
+"""
+
+from __future__ import annotations
+
 import sqlite3
-from typing import List, Tuple, Optional, Dict, Any
+from pathlib import Path
+from typing import Any, Iterable, Optional, Dict
 
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = DATA_DIR / "food_planner.db"
+# --- Where the DB lives (same folder as this file) ---
+DB_PATH = Path(__file__).with_suffix("").parent / "recipes.db"
+
+
+# ---------- Low-level utilities ----------
+def _dict_factory(cursor: sqlite3.Cursor, row: Iterable[Any]) -> Dict[str, Any]:
+    """Return rows as dicts instead of tuples."""
+    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
-    return conn
-
-def _table_info(conn: sqlite3.Connection, table: str):
-    return conn.execute(f"PRAGMA table_info({table});").fetchall()
-
-def delete_recipe(recipe_id: int) -> None:
+    # Use default thread policy; Streamlit runs single-threaded per session.
     con = sqlite3.connect(DB_PATH)
+    con.row_factory = _dict_factory
+    return con
+
+
+def _ensure_tables(con: sqlite3.Connection) -> None:
     cur = con.cursor()
-    cur.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recipes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            ingredients TEXT,
+            instructions TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    # Lightweight indices (optional but nice as data grows)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_recipes_title ON recipes(title)")
     con.commit()
-    con.close()
-    
+
+
+def _migrate_columns(con: sqlite3.Connection) -> None:
+    """
+    If an older DB exists (only 'title' column), add 'ingredients' and 'instructions'
+    without dropping user data.
+    """
+    cur = con.cursor()
+    cur.execute("PRAGMA table_info(recipes)")
+    cols = {row["name"] for row in cur.fetchall()}
+    changed = False
+
+    if "ingredients" not in cols:
+        cur.execute("ALTER TABLE recipes ADD COLUMN ingredients TEXT")
+        changed = True
+    if "instructions" not in cols:
+        cur.execute("ALTER TABLE recipes ADD COLUMN instructions TEXT")
+        changed = True
+    if "created_at" not in cols:
+        cur.execute("ALTER TABLE recipes ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        changed = True
+    if "updated_at" not in cols:
+        cur.execute("ALTER TABLE recipes ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        changed = True
+
+    if changed:
+        con.commit()
+
+
+# ---------- Public API ----------
 def init_db() -> None:
-    with _connect() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS recipes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                description TEXT,
-                ingredients TEXT,
-                steps TEXT,
-                tags TEXT,
-                prep_minutes INTEGER DEFAULT 0,
-                cook_minutes INTEGER DEFAULT 0,
-                servings INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT (datetime('now'))
-            );
-            """
-        )
-        conn.commit()
+    """
+    Ensure the database exists, tables are created, and columns are up to date.
+    Safe to call on every app load.
+    """
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _connect() as con:
+        # PRAGMAs: small durability/perf improvements
+        con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("PRAGMA foreign_keys=ON;")
+        _ensure_tables(con)
+        _migrate_columns(con)
 
-        # (Optional) old-schema migration kept from earlier messages — safe to omit if fresh DB
-        info = _table_info(conn, "recipes")
-        if info:
-            col = {row[1]: row for row in info}
-            needs_migration = any(col.get(n, (None, None, None, 0))[3] == 1 for n in ("ingredients", "steps"))
-            if needs_migration:
-                conn.execute("BEGIN;")
-                conn.execute(
-                    """
-                    CREATE TABLE recipes_new (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        title TEXT NOT NULL,
-                        description TEXT,
-                        ingredients TEXT,
-                        steps TEXT,
-                        tags TEXT,
-                        prep_minutes INTEGER DEFAULT 0,
-                        cook_minutes INTEGER DEFAULT 0,
-                        servings INTEGER DEFAULT 1,
-                        created_at TEXT DEFAULT (datetime('now'))
-                    );
-                    """
-                )
-                conn.execute(
-                    """
-                    INSERT INTO recipes_new
-                        (id, title, description, ingredients, steps, tags,
-                         prep_minutes, cook_minutes, servings, created_at)
-                    SELECT id, title, description, ingredients, steps, tags,
-                           prep_minutes, cook_minutes, servings, created_at
-                    FROM recipes;
-                    """
-                )
-                conn.execute("DROP TABLE recipes;")
-                conn.execute("ALTER TABLE recipes_new RENAME TO recipes;")
-                conn.commit()
 
-def add_recipe(
-    title: str,
-    description: str = "",
-    ingredients: str = "",
-    steps: str = "",
-    tags: str = "",
-    prep_minutes: int = 0,
-    cook_minutes: int = 0,
-    servings: int = 1,
-) -> int:
-    with _connect() as conn:
-        cur = conn.execute(
+def add_recipe(title: str, ingredients: str = "", instructions: str = "") -> int:
+    """
+    Insert a new recipe and return its id.
+    """
+    if not title or not title.strip():
+        raise ValueError("title is required")
+
+    with _connect() as con:
+        cur = con.cursor()
+        cur.execute(
             """
-            INSERT INTO recipes
-                (title, description, ingredients, steps, tags,
-                 prep_minutes, cook_minutes, servings)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO recipes (title, ingredients, instructions)
+            VALUES (?, ?, ?)
             """,
-            (
-                (title or "").strip(),
-                (description or "").strip(),
-                (ingredients or "").strip(),
-                (steps or "").strip(),
-                (tags or "").strip(),
-                int(prep_minutes or 0),
-                int(cook_minutes or 0),
-                int(servings or 1),
-            ),
+            (title.strip(), ingredients.strip(), instructions.strip()),
         )
-        conn.commit()
-        return cur.lastrowid
+        con.commit()
+        return int(cur.lastrowid)
+
+
+def list_recipes(search: Optional[str] = None) -> list[dict]:
+    """
+    Return all recipes as a list of dicts, optionally filtered by a case-insensitive search
+    in the title. Sorted alphabetically by title.
+    """
+    with _connect() as con:
+        cur = con.cursor()
+        if search and search.strip():
+            like = f"%{search.strip().lower()}%"
+            cur.execute(
+                """
+                SELECT id, title, ingredients, instructions, created_at, updated_at
+                FROM recipes
+                WHERE LOWER(title) LIKE ?
+                ORDER BY LOWER(title) ASC
+                """,
+                (like,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT id, title, ingredients, instructions, created_at, updated_at
+                FROM recipes
+                ORDER BY LOWER(title) ASC
+                """
+            )
+        return cur.fetchall()  # list of dicts
+
+
+def get_recipe(recipe_id: int) -> Optional[dict]:
+    """Return a single recipe dict or None if not found."""
+    with _connect() as con:
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT id, title, ingredients, instructions, created_at, updated_at
+            FROM recipes
+            WHERE id = ?
+            """,
+            (recipe_id,),
+        )
+        return cur.fetchone()
+
 
 def update_recipe(
     recipe_id: int,
-    title: str,
-    description: str = "",
-    ingredients: str = "",
-    steps: str = "",
-    tags: str = "",
-    prep_minutes: int = 0,
-    cook_minutes: int = 0,
-    servings: int = 1,
-) -> int:
-    """Update a recipe. Returns number of rows affected (0 or 1)."""
-    with _connect() as conn:
-        cur = conn.execute(
-            """
-            UPDATE recipes
-            SET title = ?, description = ?, ingredients = ?, steps = ?, tags = ?,
-                prep_minutes = ?, cook_minutes = ?, servings = ?
-            WHERE id = ?
-            """,
-            (
-                (title or "").strip(),
-                (description or "").strip(),
-                (ingredients or "").strip(),
-                (steps or "").strip(),
-                (tags or "").strip(),
-                int(prep_minutes or 0),
-                int(cook_minutes or 0),
-                int(servings or 1),
-                int(recipe_id),
-            ),
-        )
-        conn.commit()
-        return cur.rowcount
+    title: Optional[str] = None,
+    ingredients: Optional[str] = None,
+    instructions: Optional[str] = None,
+) -> None:
+    """
+    Update fields provided (title/ingredients/instructions).
+    """
+    if title is None and ingredients is None and instructions is None:
+        return  # nothing to do
 
-def list_recipes(limit: int = 100, search: Optional[str] = None) -> List[Tuple]:
-    with _connect() as conn:
-        if search:
-            like = f"%{search}%"
-            rows = conn.execute(
-                """
-                SELECT id, title, tags, servings, prep_minutes, cook_minutes, created_at
-                FROM recipes
-                WHERE title LIKE ? OR tags LIKE ?
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?
-                """,
-                (like, like, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT id, title, tags, servings, prep_minutes, cook_minutes, created_at
-                FROM recipes
-                ORDER BY created_at DESC, id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-    return rows
+    sets = []
+    params: list[Any] = []
+    if title is not None:
+        sets.append("title = ?")
+        params.append(title.strip())
+    if ingredients is not None:
+        sets.append("ingredients = ?")
+        params.append(ingredients.strip())
+    if instructions is not None:
+        sets.append("instructions = ?")
+        params.append(instructions.strip())
 
-def get_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
-    with _connect() as conn:
-        row = conn.execute(
-            """
-            SELECT id, title, description, ingredients, steps, tags,
-                   prep_minutes, cook_minutes, servings, created_at
-            FROM recipes WHERE id = ?
-            """,
-            (recipe_id,),
-        ).fetchone()
-    if not row:
-        return None
-    keys = [
-        "id","title","description","ingredients","steps","tags",
-        "prep_minutes","cook_minutes","servings","created_at"
-    ]
-    return dict(zip(keys, row))
+    sets.append("updated_at = CURRENT_TIMESTAMP")
+    sql = f"UPDATE recipes SET {', '.join(sets)} WHERE id = ?"
+    params.append(recipe_id)
+
+    with _connect() as con:
+        cur = con.cursor()
+        cur.execute(sql, tuple(params))
+        con.commit()
+
+
+def delete_recipe(recipe_id: int) -> None:
+    """Delete a recipe by id."""
+    with _connect() as con:
+        cur = con.cursor()
+        cur.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
+        con.commit()
+
+
+def count_recipes() -> int:
+    """Return total number of recipes."""
+    with _connect() as con:
+        cur = con.cursor()
+        cur.execute("SELECT COUNT(*) AS c FROM recipes")
+        row = cur.fetchone()
+        return int(row["c"]) if row else 0
