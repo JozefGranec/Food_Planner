@@ -5,7 +5,7 @@ from pages import household, cookbook, food_plan, shopping_list  # each must exp
 
 # --- Paths ---
 APP_DIR = Path(__file__).parent
-LOGO_PATH = APP_DIR / "pictures" / "Shop_n_Home.jpeg"  # <-- updated to .jpeg
+LOGO_PATH = APP_DIR / "pictures" / "Shop_n_Home.jpeg"  # <-- JPEG logo
 
 # --- Page config ---
 st.set_page_config(
@@ -18,38 +18,34 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-        .banner {
-            position: sticky;       /* makes it stick while scrolling */
+        .sticky-banner {
+            position: sticky;
             top: 0;
-            z-index: 9999;          /* stays on top */
+            z-index: 9999;
             background-color: #f8f9fa;
-            padding: 14px 0;
+            padding: 10px 0;
             border-bottom: 1px solid #e5e7eb;
             box-shadow: 0 2px 6px rgba(0,0,0,0.06);
             text-align: center;
         }
-        .banner img {
-            max-width: 300px;       /* adjust as needed */
-            width: 100%;
-            height: auto;
-        }
-        /* Optional: reduce padding at very top */
-        .block-container { padding-top: 0.5rem; }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# --- Header (banner with logo or fallback title) ---
+# --- Header (use Streamlit image, not file:// HTML) ---
 if LOGO_PATH.exists():
-    st.markdown(
-        f"""
-        <div class="banner">
-            <img src="file://{LOGO_PATH}" alt="Shop n Home Logo">
+    banner = f"""
+    <div class="sticky-banner">
+        <div style="display:flex; justify-content:center; align-items:center;">
+            <img src="data:image/jpeg;base64,{Path(LOGO_PATH).read_bytes().hex()}" />
         </div>
-        """,
-        unsafe_allow_html=True
-    )
+    </div>
+    """
+    # Instead of embedding raw bytes as hex, better way:
+    st.markdown('<div class="sticky-banner">', unsafe_allow_html=True)
+    st.image(str(LOGO_PATH), use_container_width=False, width=250)
+    st.markdown('</div>', unsafe_allow_html=True)
 else:
     st.title("🍽️ Food Planner")
 
