@@ -1,6 +1,7 @@
 # streamlit_app.py
 import streamlit as st
 from pathlib import Path
+import base64
 from pages import household, cookbook, food_plan, shopping_list  # each must expose render()
 
 # --- Paths ---
@@ -22,21 +23,37 @@ st.markdown(
             position: sticky;
             top: 0;
             z-index: 9999;
-            background-color: white;   /* white background */
+            background-color: white;   /* white banner */
             padding: 15px 0;
             border-bottom: 1px solid #e5e7eb;
-            text-align: center;
+            text-align: center;        /* center content */
+        }
+        .sticky-banner img {
+            max-width: 300px;          /* control logo size */
+            height: auto;
         }
     </style>
     """,
     unsafe_allow_html=True
 )
 
+# --- Convert image to base64 for embedding ---
+def get_base64_image(image_path):
+    with open(image_path, "rb") as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
+
 # --- Header ---
 if LOGO_PATH.exists():
-    st.markdown('<div class="sticky-banner">', unsafe_allow_html=True)
-    st.image(str(LOGO_PATH), use_container_width=False, width=300)  # centered automatically
-    st.markdown('</div>', unsafe_allow_html=True)
+    logo_base64 = get_base64_image(LOGO_PATH)
+    st.markdown(
+        f"""
+        <div class="sticky-banner">
+            <img src="data:image/jpeg;base64,{logo_base64}" alt="Shop n Home Logo">
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 else:
     st.title("🍽️ Food Planner")
 
