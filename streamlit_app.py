@@ -30,7 +30,7 @@ st.markdown(
         }
         .sticky-banner img {
             max-width: 300px;          /* control logo size */
-            height: auto;
+            max-height: 300px; /* auto; */
         }
     </style>
     """,
@@ -68,4 +68,5 @@ with tab3:
     food_plan.render()
 with tab4:
     shopping_list.render()
+
 
