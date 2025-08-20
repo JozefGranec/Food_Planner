@@ -7,19 +7,42 @@ from pages import household, cookbook, food_plan, shopping_list  # each must exp
 APP_DIR = Path(__file__).parent
 LOGO_PATH = APP_DIR / "pictures" / "Shop_n_Home.jpeg"
 
-# --- Page config (use your logo as the page icon if available) ---
+# --- Page config ---
 st.set_page_config(
     page_title="Food Planner",
-    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🍽️",
+    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🍽️",  # favicon
     layout="wide"
 )
 
-# --- Header: show image instead of title ---
+# --- Custom CSS for banner ---
+st.markdown(
+    """
+    <style>
+        .banner {
+            background-color: #f8f9fa;   /* light gray background */
+            padding: 15px 0;
+            text-align: center;
+            border-bottom: 2px solid #ddd;
+        }
+        .banner img {
+            max-width: 300px;   /* adjust logo size */
+            height: auto;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# --- Header (banner with logo or fallback title) ---
 if LOGO_PATH.exists():
-    # Center the logo nicely
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.image(str(LOGO_PATH), caption=None, use_column_width=True)
+    st.markdown(
+        f"""
+        <div class="banner">
+            <img src="file://{LOGO_PATH}" alt="Shop n Home Logo">
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 else:
     st.title("🍽️ Food Planner")
 
@@ -34,4 +57,3 @@ with tab3:
     food_plan.render()
 with tab4:
     shopping_list.render()
-
