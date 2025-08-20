@@ -1,164 +1,97 @@
 # food/db.py
 """
-SQLite helpers for the Food Planner app.
-
-Exports:
-- init_db()
-- add_recipe(title, ingredients="", instructions="")
-- list_recipes(search: str | None = None) -> list[dict]
-- get_recipe(recipe_id: int) -> dict | None
-- update_recipe(recipe_id: int, title=None, ingredients=None, instructions=None)
-- delete_recipe(recipe_id: int)
-- count_recipes() -> int
+DB helpers for Food Planner.
+- Uses DATABASE_URL if present (Postgres on Neon/Supabase/Railway).
+- Falls back to SQLite locally.
 """
 
 from __future__ import annotations
-
-import sqlite3
+import os
 from pathlib import Path
-from typing import Any, Iterable, Optional, Dict
+from typing import Optional, Any, List, Dict
 
-# --- Where the DB lives (same folder as this file) ---
-DB_PATH = Path(__file__).with_suffix("").parent / "recipes.db"
+from sqlalchemy import (
+    create_engine, MetaData, Table, Column, Integer, Text, String, select,
+    func, insert, update, delete
+)
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.pool import NullPool
 
+# Try to read secrets from Streamlit if available
+def _get_database_url() -> Optional[str]:
+    # 1) Streamlit secrets
+    try:
+        import streamlit as st  # type: ignore
+        if "DATABASE_URL" in st.secrets:
+            return st.secrets["DATABASE_URL"]
+    except Exception:
+        pass
+    # 2) Environment
+    return os.getenv("DATABASE_URL")
 
-# ---------- Low-level utilities ----------
-def _dict_factory(cursor: sqlite3.Cursor, row: Iterable[Any]) -> Dict[str, Any]:
-    """Return rows as dicts instead of tuples."""
-    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+# Fallback SQLite (local dev)
+LOCAL_SQLITE = Path.home() / ".food_planner" / "recipes.db"
+LOCAL_SQLITE.parent.mkdir(parents=True, exist_ok=True)
 
+DATABASE_URL = _get_database_url() or f"sqlite:///{LOCAL_SQLITE}"
 
-def _connect() -> sqlite3.Connection:
-    # Use default thread policy; Streamlit runs single-threaded per session.
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = _dict_factory
-    return con
+# For serverless/short‑lived environments, avoid persistent connection pooling
+_engine: Engine = create_engine(DATABASE_URL, poolclass=NullPool, future=True)
 
+metadata = MetaData()
 
-def _ensure_tables(con: sqlite3.Connection) -> None:
-    cur = con.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS recipes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            ingredients TEXT,
-            instructions TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-    # Lightweight indices (optional but nice as data grows)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_recipes_title ON recipes(title)")
-    con.commit()
+recipes = Table(
+    "recipes",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("title", String(500), nullable=False),
+    Column("ingredients", Text, nullable=True),
+    Column("instructions", Text, nullable=True),
+)
 
-
-def _migrate_columns(con: sqlite3.Connection) -> None:
-    """
-    If an older DB exists (only 'title' column), add 'ingredients' and 'instructions'
-    without dropping user data.
-    """
-    cur = con.cursor()
-    cur.execute("PRAGMA table_info(recipes)")
-    cols = {row["name"] for row in cur.fetchall()}
-    changed = False
-
-    if "ingredients" not in cols:
-        cur.execute("ALTER TABLE recipes ADD COLUMN ingredients TEXT")
-        changed = True
-    if "instructions" not in cols:
-        cur.execute("ALTER TABLE recipes ADD COLUMN instructions TEXT")
-        changed = True
-    if "created_at" not in cols:
-        cur.execute("ALTER TABLE recipes ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-        changed = True
-    if "updated_at" not in cols:
-        cur.execute("ALTER TABLE recipes ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-        changed = True
-
-    if changed:
-        con.commit()
-
-
-# ---------- Public API ----------
 def init_db() -> None:
-    """
-    Ensure the database exists, tables are created, and columns are up to date.
-    Safe to call on every app load.
-    """
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with _connect() as con:
-        # PRAGMAs: small durability/perf improvements
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA foreign_keys=ON;")
-        _ensure_tables(con)
-        _migrate_columns(con)
-
+    """Create tables if they don't exist."""
+    metadata.create_all(_engine)
 
 def add_recipe(title: str, ingredients: str = "", instructions: str = "") -> int:
-    """
-    Insert a new recipe and return its id.
-    """
     if not title or not title.strip():
         raise ValueError("title is required")
-
-    with _connect() as con:
-        cur = con.cursor()
-        cur.execute(
-            """
-            INSERT INTO recipes (title, ingredients, instructions)
-            VALUES (?, ?, ?)
-            """,
-            (title.strip(), ingredients.strip(), instructions.strip()),
+    with _engine.begin() as conn:
+        res = conn.execute(
+            insert(recipes).values(
+                title=title.strip(),
+                ingredients=ingredients.strip(),
+                instructions=instructions.strip(),
+            )
         )
-        con.commit()
-        return int(cur.lastrowid)
+        # SQLite returns lastrowid; Postgres returns inserted_primary_key
+        inserted_id = res.inserted_primary_key[0] if res.inserted_primary_key else None
+        if inserted_id is None:
+            # Try to fetch last id in a portable way
+            row = conn.execute(
+                select(func.max(recipes.c.id))
+            ).scalar_one()
+            return int(row)
+        return int(inserted_id)
 
-
-def list_recipes(search: Optional[str] = None) -> list[dict]:
-    """
-    Return all recipes as a list of dicts, optionally filtered by a case-insensitive search
-    in the title. Sorted alphabetically by title.
-    """
-    with _connect() as con:
-        cur = con.cursor()
+def list_recipes(search: Optional[str] = None) -> List[Dict[str, Any]]:
+    with _engine.begin() as conn:
         if search and search.strip():
-            like = f"%{search.strip().lower()}%"
-            cur.execute(
-                """
-                SELECT id, title, ingredients, instructions, created_at, updated_at
-                FROM recipes
-                WHERE LOWER(title) LIKE ?
-                ORDER BY LOWER(title) ASC
-                """,
-                (like,),
-            )
+            s = select(recipes).where(
+                func.lower(recipes.c.title).like(f"%{search.strip().lower()}%")
+            ).order_by(func.lower(recipes.c.title))
         else:
-            cur.execute(
-                """
-                SELECT id, title, ingredients, instructions, created_at, updated_at
-                FROM recipes
-                ORDER BY LOWER(title) ASC
-                """
-            )
-        return cur.fetchall()  # list of dicts
+            s = select(recipes).order_by(func.lower(recipes.c.title))
+        rows = conn.execute(s).mappings().all()
+        return [dict(r) for r in rows]
 
-
-def get_recipe(recipe_id: int) -> Optional[dict]:
-    """Return a single recipe dict or None if not found."""
-    with _connect() as con:
-        cur = con.cursor()
-        cur.execute(
-            """
-            SELECT id, title, ingredients, instructions, created_at, updated_at
-            FROM recipes
-            WHERE id = ?
-            """,
-            (recipe_id,),
-        )
-        return cur.fetchone()
-
+def get_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
+    with _engine.begin() as conn:
+        row = conn.execute(
+            select(recipes).where(recipes.c.id == recipe_id)
+        ).mappings().first()
+        return dict(row) if row else None
 
 def update_recipe(
     recipe_id: int,
@@ -166,46 +99,22 @@ def update_recipe(
     ingredients: Optional[str] = None,
     instructions: Optional[str] = None,
 ) -> None:
-    """
-    Update fields provided (title/ingredients/instructions).
-    """
-    if title is None and ingredients is None and instructions is None:
-        return  # nothing to do
-
-    sets = []
-    params: list[Any] = []
+    values: Dict[str, Any] = {}
     if title is not None:
-        sets.append("title = ?")
-        params.append(title.strip())
+        values["title"] = title.strip()
     if ingredients is not None:
-        sets.append("ingredients = ?")
-        params.append(ingredients.strip())
+        values["ingredients"] = ingredients.strip()
     if instructions is not None:
-        sets.append("instructions = ?")
-        params.append(instructions.strip())
-
-    sets.append("updated_at = CURRENT_TIMESTAMP")
-    sql = f"UPDATE recipes SET {', '.join(sets)} WHERE id = ?"
-    params.append(recipe_id)
-
-    with _connect() as con:
-        cur = con.cursor()
-        cur.execute(sql, tuple(params))
-        con.commit()
-
+        values["instructions"] = instructions.strip()
+    if not values:
+        return
+    with _engine.begin() as conn:
+        conn.execute(update(recipes).where(recipes.c.id == recipe_id).values(**values))
 
 def delete_recipe(recipe_id: int) -> None:
-    """Delete a recipe by id."""
-    with _connect() as con:
-        cur = con.cursor()
-        cur.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
-        con.commit()
-
+    with _engine.begin() as conn:
+        conn.execute(delete(recipes).where(recipes.c.id == recipe_id))
 
 def count_recipes() -> int:
-    """Return total number of recipes."""
-    with _connect() as con:
-        cur = con.cursor()
-        cur.execute("SELECT COUNT(*) AS c FROM recipes")
-        row = cur.fetchone()
-        return int(row["c"]) if row else 0
+    with _engine.begin() as conn:
+        return int(conn.execute(select(func.count()).select_from(recipes)).scalar_one())
