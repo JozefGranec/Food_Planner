@@ -6,7 +6,7 @@ from pages import household, cookbook, food_plan, shopping_list  # each must exp
 
 # --- Paths ---
 APP_DIR = Path(__file__).parent
-LOGO_PATH = APP_DIR / "pictures" / "Shop_n_Home.jpeg"  # <-- JPEG logo
+LOGO_PATH = APP_DIR / "pictures" / "Shop_n_Home.png"  # <-- JPEG logo
 
 # --- Page config ---
 st.set_page_config(
@@ -68,3 +68,4 @@ with tab3:
     food_plan.render()
 with tab4:
     shopping_list.render()
+
