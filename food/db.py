@@ -17,6 +17,13 @@ def _connect() -> sqlite3.Connection:
 def _table_info(conn: sqlite3.Connection, table: str):
     return conn.execute(f"PRAGMA table_info({table});").fetchall()
 
+def delete_recipe(recipe_id: int) -> None:
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
+    con.commit()
+    con.close()
+    
 def init_db() -> None:
     with _connect() as conn:
         conn.execute(
