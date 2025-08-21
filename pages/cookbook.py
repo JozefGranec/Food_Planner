@@ -170,6 +170,24 @@ def render():
             _open_add()
             st.rerun()
 
+        # Keep the Add button close to the A–Z list
+if st.button("➕ Add recipe", use_container_width=True):
+    _open_add()
+    st.rerun()
+
+# ↓ Kill extra spacing between Add button and the first "A" header
+st.markdown(
+    """
+    <style>
+    /* Remove bottom margin under buttons */
+    div[data-testid="stButton"] { margin-bottom: 0rem !important; }
+    /* Remove top margin on markdown h3 headers (### A, B, C...) */
+    div[data-testid="stMarkdown"] h3 { margin-top: 0rem !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
         # Prevent Enter from navigating to other pages + keep focus in app
         # Use placeholder selector (robust when label is collapsed)
         components.html(
