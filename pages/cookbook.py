@@ -1,5 +1,6 @@
 # pages/cookbook.py
 import streamlit as st
+import streamlit.components.v1 as components
 import string
 from typing import List, Dict, Any
 
@@ -142,18 +143,12 @@ def render():
     left, right = st.columns([2.2, 3])
 
     with left:
-        # Dynamic search: typing triggers rerun -> list filters instantly
+        # Dynamic search: typing triggers rerun -> we auto-scroll to first letter
         ss.cb_query = st.text_input(
             "Search recipes",
             value=ss.cb_query,
-            placeholder="Start typing… e.g., 'chi' for 'Chicken'",
+            placeholder="Start typing… e.g., 'g' will jump to G",
         )
-
-        # Compute the letter to auto-jump to (first ASCII letter typed)
-        jump_letter = None
-        q = (ss.cb_query or "").strip()
-        if q and q[0].isalpha():
-            jump_letter = q[0].upper()
 
         all_recipes: List[Any] = list_recipes() or []
         all_recipes.sort(key=lambda x: _normalize_title(x).lower())
@@ -165,10 +160,9 @@ def render():
             _open_add()
             st.rerun()
 
-        # ALWAYS render A-Z with stable anchors; show em dash if no items
+        # ALWAYS render A–Z with stable anchors, even if empty
         for ch in string.ascii_uppercase:
-            # Invisible anchor (target for auto-scroll)
-            st.markdown(f"<a id='sec-{ch}'></a>", unsafe_allow_html=True)
+            st.markdown(f"<a id='sec-{ch}'></a>", unsafe_allow_html=True)  # anchor
             st.markdown(f"### {ch}")
             items = buckets.get(ch, [])
             if not items:
@@ -303,13 +297,19 @@ def render():
                         except Exception as e:
                             st.error(f"Could not update: {e}")
 
-    # ===== AUTO-JUMP (after anchors exist) =====
-    # If user typed a letter first, jump to that letter's header.
-    # Uses a tiny meta refresh to navigate to the hash; no JS required.
+    # ===== AUTO-SCROLL to first typed character (even if no results under that letter) =====
     q = (st.session_state.cb_query or "").strip()
     if q and q[0].isalpha():
         first_letter = q[0].upper()
-        st.markdown(
-            f"<meta http-equiv='refresh' content='0; url=#sec-{first_letter}'>",
-            unsafe_allow_html=True,
+        # Scroll to the letter header; keep URL clean (no hash change needed)
+        components.html(
+            f"""
+            <script>
+              const el = window.parent.document.getElementById('sec-{first_letter}');
+              if (el) {{
+                el.scrollIntoView({{behavior: 'instant', block: 'start'}});
+              }}
+            </script>
+            """,
+            height=0,
         )
