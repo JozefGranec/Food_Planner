@@ -1,3 +1,6 @@
+the uploaded image is resized to 400x400. I have change this to 100x100 in row: image.thumbnail((100, 100))  # keeps aspect ratio, only downsizes. But when I save and check the recipe I see the image was resized but also streched to the boundaries of the table. I need to keep the image 100x100 the resize size and if its smaller there should be a gap between the table and the image. Here is the cookbook.py code:
+
+
 # pages/cookbook.py
 import io
 import string
