@@ -143,24 +143,45 @@ def render():
     left, right = st.columns([2.2, 3])
 
     with left:
-        # Dynamic search: typing triggers rerun; block Enter from navigating away
+        # --- Search: show only placeholder text; reduce spacing below field ---
         ss.cb_query = st.text_input(
-            "Search recipes",
+            "",  # empty label
             value=ss.cb_query,
-            placeholder="Start typing… e.g., 'g' will jump to G",
+            placeholder="Start typing… then press Enter to apply",
             key="cb_query_input",
+            label_visibility="collapsed",
         )
 
-        # Prevent Enter key from navigating to another page (multipage apps)
+        # Tighten spacing below the search input
+        st.markdown(
+            """
+            <style>
+            /* Reduce bottom margin under the FIRST text input in the left column */
+            div[data-testid="stTextInput"] {
+                margin-bottom: 0.25rem;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Keep the Add button close to the search
+        if st.button("➕ Add recipe", use_container_width=True):
+            _open_add()
+            st.rerun()
+
+        # Prevent Enter from navigating to other pages + keep focus in app
+        # Use placeholder selector (robust when label is collapsed)
         components.html(
             """
             <script>
               (function(){
                 const doc = window.parent.document;
-                const inputs = doc.querySelectorAll("input[aria-label='Search recipes']");
-                if (inputs && inputs.length) {
-                  const inp = inputs[0];
-                  inp.addEventListener('keydown', function(e){
+                const target = doc.querySelector('input[placeholder="Start typing… then press Enter to apply"]')
+                              || doc.querySelector('input[aria-label=""]')
+                              || doc.querySelector('input[type="text"]');
+                if (target) {
+                  target.addEventListener('keydown', function(e){
                     if (e.key === 'Enter') {
                       e.preventDefault();
                       e.stopPropagation();
@@ -174,17 +195,13 @@ def render():
             height=0,
         )
 
+        # Build filtered A–Z list
         all_recipes: List[Any] = list_recipes() or []
         all_recipes.sort(key=lambda x: _normalize_title(x).lower())
-
         filtered = _filter_by_query(all_recipes, ss.cb_query)
         buckets = _group_by_letter(filtered)
 
-        if st.button("➕ Add recipe", use_container_width=True):
-            _open_add()
-            st.rerun()
-
-        # ALWAYS render A–Z with stable anchors, even if empty
+        # ALWAYS render A–Z with anchors, even when empty
         for ch in string.ascii_uppercase:
             st.markdown(f"<a id='sec-{ch}'></a>", unsafe_allow_html=True)  # anchor
             st.markdown(f"### {ch}")
