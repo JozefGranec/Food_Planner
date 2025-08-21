@@ -60,7 +60,7 @@ def render():
         Returns (img_bytes, mime_type, original_filename).
         """
         image = Image.open(file)
-        image.thumbnail((100, 100))  # keeps aspect ratio, only downsizes
+        image.thumbnail((200, 200))  # keeps aspect ratio, only downsizes
         buf = io.BytesIO()
         fmt = image.format or "PNG"
         image.save(buf, format=fmt)
@@ -73,7 +73,7 @@ def render():
         """Return a PIL image preview resized to max 100x100 (no upscaling)."""
         im = Image.open(file)
         im = im.copy()
-        im.thumbnail((100, 100))
+        im.thumbnail((200, 200))
         return im
 
     # ---------- session ----------
