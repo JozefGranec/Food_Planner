@@ -1,8 +1,8 @@
-# pages/cookbook.py
 import streamlit as st
 import streamlit.components.v1 as components
 import string
 from typing import List, Dict, Any
+from PIL import Image   # 👈 added
 
 from food.db import (
     init_db,
@@ -118,31 +118,36 @@ def render():
             _back_to_list()
             st.rerun()
 
-        if save:
-            if not title.strip():
-                st.error("Title is required.")
-            else:
-                try:
-                    img_bytes = img_mime = img_name = None
-                    if uploaded_img is not None:
-                        img_bytes = uploaded_img.getvalue()
-                        img_mime = uploaded_img.type
-                        img_name = uploaded_img.name
+if save:
+    if not title.strip():
+        st.error("Title is required.")
+    else:
+        try:
+            img_bytes = img_mime = img_name = None
+            if uploaded_img is not None:
+                # 👇 Resize to max 400x400
+                image = Image.open(uploaded_img)
+                image.thumbnail((400, 400))  # keeps aspect ratio
+                import io
+                buf = io.BytesIO()
+                image.save(buf, format=image.format or "PNG")
+                img_bytes = buf.getvalue()
+                img_mime = uploaded_img.type
+                img_name = uploaded_img.name
 
-                    add_recipe(
-                        title=title.strip(),
-                        ingredients=ingredients.strip(),
-                        instructions=instructions.strip(),
-                        image_bytes=img_bytes,
-                        image_mime=img_mime,
-                        image_filename=img_name,
-                    )
-                    st.toast(f"Recipe “{title.strip()}” added.", icon="✅")
-                    _back_to_list()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Could not add recipe: {e}")
-        return  # Add page shows nothing else
+            add_recipe(
+                title=title.strip(),
+                ingredients=ingredients.strip(),
+                instructions=instructions.strip(),
+                image_bytes=img_bytes,
+                image_mime=img_mime,
+                image_filename=img_name,
+            )
+            st.toast(f"Recipe “{title.strip()}” added.", icon="✅")
+            _back_to_list()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Could not add recipe: {e}")
 
     # ========== VIEW PAGE (full-width, READ-ONLY form) ==========
     if ss.cb_mode == "view":
@@ -272,34 +277,39 @@ def render():
             ss.cb_mode = "view"
             st.rerun()
 
-        if save:
-            if not new_title.strip():
-                st.error("Title is required.")
-            else:
-                try:
-                    replace = e_uploaded is not None
-                    img_bytes = img_mime = img_name = None
-                    if replace:
-                        img_bytes = e_uploaded.getvalue()
-                        img_mime = e_uploaded.type
-                        img_name = e_uploaded.name
+if save:
+    if not new_title.strip():
+        st.error("Title is required.")
+    else:
+        try:
+            replace = e_uploaded is not None
+            img_bytes = img_mime = img_name = None
+            if replace:
+                # 👇 Resize to max 400x400
+                image = Image.open(e_uploaded)
+                image.thumbnail((400, 400))
+                import io
+                buf = io.BytesIO()
+                image.save(buf, format=image.format or "PNG")
+                img_bytes = buf.getvalue()
+                img_mime = e_uploaded.type
+                img_name = e_uploaded.name
 
-                    update_recipe(
-                        recipe_id=rid,
-                        title=new_title.strip(),
-                        ingredients=new_ing.strip(),
-                        instructions=new_instr.strip(),
-                        image_bytes=img_bytes if replace else None,
-                        image_mime=img_mime if replace else None,
-                        image_filename=img_name if replace else None,
-                        keep_existing_image=not replace,
-                    )
-                    st.toast("Recipe updated.", icon="✏️")
-                    ss.cb_mode = "view"
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Could not update: {e}")
-        return  # Edit page done
+            update_recipe(
+                recipe_id=rid,
+                title=new_title.strip(),
+                ingredients=new_ing.strip(),
+                instructions=new_instr.strip(),
+                image_bytes=img_bytes if replace else None,
+                image_mime=img_mime if replace else None,
+                image_filename=img_name if replace else None,
+                keep_existing_image=not replace,
+            )
+            st.toast("Recipe updated.", icon="✏️")
+            ss.cb_mode = "view"
+            st.rerun()
+        except Exception as e:
+            st.error(f"Could not update: {e}")
 
     # ========== LIST PAGE (default) ==========
     if ss.cb_mode == "list":
