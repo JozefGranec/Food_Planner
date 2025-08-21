@@ -143,11 +143,35 @@ def render():
     left, right = st.columns([2.2, 3])
 
     with left:
-        # Dynamic search: typing triggers rerun -> we auto-scroll to first letter
+        # Dynamic search: typing triggers rerun; block Enter from navigating away
         ss.cb_query = st.text_input(
             "Search recipes",
             value=ss.cb_query,
             placeholder="Start typing… e.g., 'g' will jump to G",
+            key="cb_query_input",
+        )
+
+        # Prevent Enter key from navigating to another page (multipage apps)
+        components.html(
+            """
+            <script>
+              (function(){
+                const doc = window.parent.document;
+                const inputs = doc.querySelectorAll("input[aria-label='Search recipes']");
+                if (inputs && inputs.length) {
+                  const inp = inputs[0];
+                  inp.addEventListener('keydown', function(e){
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      return false;
+                    }
+                  }, {capture: true});
+                }
+              })();
+            </script>
+            """,
+            height=0,
         )
 
         all_recipes: List[Any] = list_recipes() or []
@@ -301,11 +325,11 @@ def render():
     q = (st.session_state.cb_query or "").strip()
     if q and q[0].isalpha():
         first_letter = q[0].upper()
-        # Scroll to the letter header; keep URL clean (no hash change needed)
         components.html(
             f"""
             <script>
-              const el = window.parent.document.getElementById('sec-{first_letter}');
+              const doc = window.parent.document;
+              const el = doc.getElementById('sec-{first_letter}');
               if (el) {{
                 el.scrollIntoView({{behavior: 'instant', block: 'start'}});
               }}
