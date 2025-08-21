@@ -1,6 +1,3 @@
-the uploaded image is resized to 400x400. I have change this to 100x100 in row: image.thumbnail((100, 100))  # keeps aspect ratio, only downsizes. But when I save and check the recipe I see the image was resized but also streched to the boundaries of the table. I need to keep the image 100x100 the resize size and if its smaller there should be a gap between the table and the image. Here is the cookbook.py code:
-
-
 # pages/cookbook.py
 import io
 import string
@@ -57,22 +54,27 @@ def render():
             buckets[k].sort(key=lambda x: _normalize_title(x).lower())
         return buckets
 
-    def _resize_image_to_max_400(file) -> (bytes, str, str):
+    def _resize_image_to_max_100(file) -> (bytes, str, str):
         """
-        Resize uploaded image to max 100x100 while preserving aspect ratio.
+        Resize uploaded image to max 100x100 while preserving aspect ratio (no upscaling).
         Returns (img_bytes, mime_type, original_filename).
         """
         image = Image.open(file)
         image.thumbnail((100, 100))  # keeps aspect ratio, only downsizes
         buf = io.BytesIO()
-        # Preserve format if known; fallback to PNG
         fmt = image.format or "PNG"
         image.save(buf, format=fmt)
         img_bytes = buf.getvalue()
-        # file has attributes .type and .name when coming from st.file_uploader
         mime = getattr(file, "type", None) or ("image/png" if fmt.upper() == "PNG" else f"image/{fmt.lower()}")
         name = getattr(file, "name", None) or f"image.{fmt.lower()}"
         return img_bytes, mime, name
+
+    def _pil_preview_100(file) -> Image.Image:
+        """Return a PIL image preview resized to max 100x100 (no upscaling)."""
+        im = Image.open(file)
+        im = im.copy()
+        im.thumbnail((100, 100))
+        return im
 
     # ---------- session ----------
     ss = st.session_state
@@ -119,14 +121,18 @@ def render():
             # Title first
             title = st.text_input("Title *", placeholder="e.g., Chicken Wings")
 
-            # Image uploader DIRECTLY under title (+ live preview)
+            # Image uploader DIRECTLY under title (+ live preview at natural size)
             uploaded_img = st.file_uploader(
                 "Recipe image (optional)",
                 type=["png", "jpg", "jpeg", "webp"],
                 help="Add a photo for this recipe."
             )
             if uploaded_img is not None:
-                st.image(uploaded_img, caption="Selected image (preview)", use_container_width=True)
+                try:
+                    preview_im = _pil_preview_100(uploaded_img)
+                    st.image(preview_im, caption="Selected image (preview)")  # no use_container_width -> no stretch
+                except Exception:
+                    st.warning("Could not preview this image format, but it will still be saved after resizing.")
 
             ingredients = st.text_area("Ingredients", placeholder="One per line…")
             instructions = st.text_area("Instructions", placeholder="Steps…")
@@ -148,8 +154,8 @@ def render():
                 try:
                     img_bytes = img_mime = img_name = None
                     if uploaded_img is not None:
-                        # Resize to max 400x400
-                        img_bytes, img_mime, img_name = _resize_image_to_max_400(uploaded_img)
+                        # Resize to max 100x100 for storage
+                        img_bytes, img_mime, img_name = _resize_image_to_max_100(uploaded_img)
 
                     add_recipe(
                         title=title.strip(),
@@ -199,12 +205,12 @@ def render():
                 key="view_disabled_uploader",
             )
             if rimg:
-                st.image(rimg, caption=rtitle or "Recipe image", use_container_width=True)
+                # show at intrinsic size (already <=100x100), no stretching
+                st.image(rimg, caption=rtitle or "Recipe image")
 
             st.text_area("Ingredients", value=ringing, disabled=True)
             st.text_area("Instructions", value=rinstr, disabled=True)
 
-            # Dummy submit just to keep form styling consistent (hidden)
             st.form_submit_button(" ", disabled=True, help="View mode")
 
         # Actions BELOW the form
@@ -221,7 +227,6 @@ def render():
                 _back_to_list()
                 st.rerun()
 
-        # Delete confirmation
         if ss.cb_confirm_delete_id == rid:
             st.warning("Are you sure you want to delete this recipe?")
             dc1, dc2 = st.columns([1, 1])
@@ -263,23 +268,25 @@ def render():
 
         st.subheader(f"Edit: {rtitle or 'Untitled'}")
         with st.form("cb_edit_form"):
-            # Title
             new_title = st.text_input("Title *", value=rtitle)
 
-            # Image uploader DIRECTLY under title (+ show current + preview if replacing)
             e_uploaded = st.file_uploader(
                 "Change or add image (optional)",
                 type=["png", "jpg", "jpeg", "webp"],
                 help="Upload to replace/add an image."
             )
 
-            # Show current image if exists (and no replacement selected yet)
+            # Show current (intrinsic size) if no replacement selected yet
             if rimg and e_uploaded is None:
-                st.image(rimg, caption="Current image", use_container_width=True)
+                st.image(rimg, caption="Current image")
 
-            # If a new file is selected, preview that instead
+            # If a new file is selected, preview resized version at intrinsic size
             if e_uploaded is not None:
-                st.image(e_uploaded, caption="New image (preview)", use_container_width=True)
+                try:
+                    preview_im = _pil_preview_100(e_uploaded)
+                    st.image(preview_im, caption="New image (preview)")
+                except Exception:
+                    st.warning("Could not preview this image format, but it will still be saved after resizing.")
 
             new_ing = st.text_area("Ingredients", value=ringing)
             new_instr = st.text_area("Instructions", value=rinstr)
@@ -302,8 +309,7 @@ def render():
                     replace = e_uploaded is not None
                     img_bytes = img_mime = img_name = None
                     if replace:
-                        # Resize to max 400x400
-                        img_bytes, img_mime, img_name = _resize_image_to_max_400(e_uploaded)
+                        img_bytes, img_mime, img_name = _resize_image_to_max_100(e_uploaded)
 
                     update_recipe(
                         recipe_id=rid,
@@ -328,7 +334,6 @@ def render():
         left, _ = st.columns([2.2, 3])
 
         with left:
-            # --- Search: show only placeholder text; reduce spacing below field ---
             ss.cb_query = st.text_input(
                 "",
                 value=ss.cb_query,
@@ -337,7 +342,7 @@ def render():
                 label_visibility="collapsed",
             )
 
-            # 🔹 Strong CSS compression of spacing (search → button → first header)
+            # Tight spacing (search → button → first header)
             st.markdown(
                 """
                 <style>
@@ -352,7 +357,6 @@ def render():
                 unsafe_allow_html=True,
             )
 
-            # Add recipe button
             if st.button("➕ Add recipe", use_container_width=True):
                 _open_add()
                 st.rerun()
@@ -387,7 +391,6 @@ def render():
             filtered = _filter_by_query(all_recipes, ss.cb_query)
             buckets = _group_by_letter(filtered)
 
-            # ALWAYS render A–Z with anchors, even when empty
             for ch in string.ascii_uppercase:
                 st.markdown(f"<a id='sec-{ch}'></a>", unsafe_allow_html=True)
                 st.markdown(f"### {ch}")
@@ -403,7 +406,7 @@ def render():
                             st.rerun()
                 st.divider()
 
-        # ===== AUTO-SCROLL to first typed character (even if no results under that letter) =====
+        # Auto-scroll to first typed character
         q = (st.session_state.cb_query or "").strip()
         if q and q[0].isalpha():
             first_letter = q[0].upper()
