@@ -32,88 +32,81 @@ def render():
         return None
 
     def _group_by_letter(recipes: List[Any]) -> Dict[str, List[Any]]:
-        buckets: Dict[str, List[Any]] = {ch: [] for ch in string.ascii_uppercase}
+        buckets: Dict[str, List[Any]] = {}
         for r in recipes:
             t = _normalize_title(r).strip()
             if not t:
                 continue
             first = t[0].upper()
-            key = first if first in buckets else "Z"
-            buckets[key].append(r)
+            key = first if first in string.ascii_uppercase else "Z"
+            buckets.setdefault(key, []).append(r)
         for k in buckets:
             buckets[k].sort(key=lambda x: _normalize_title(x).lower())
-        return buckets
+        return dict(sorted(buckets.items(), key=lambda kv: kv[0]))
 
     def _filter_by_query(recipes: List[Any], q: str) -> List[Any]:
-        q = q.strip().lower()
+        q = (q or "").strip().lower()
         if not q:
             return recipes
         return [r for r in recipes if q in _normalize_title(r).lower()]
 
     # ---------- session ----------
-    if "cb_selected_id" not in st.session_state:
-        st.session_state.cb_selected_id = None
-    if "cb_mode" not in st.session_state:
-        st.session_state.cb_mode = "list"  # "list" | "view" | "edit" | "add"
-    if "cb_confirm_delete_id" not in st.session_state:
-        st.session_state.cb_confirm_delete_id = None
-    if "cb_query" not in st.session_state:
-        st.session_state.cb_query = ""
+    ss = st.session_state
+    if "cb_mode" not in ss:
+        ss.cb_mode = "list"  # "list" | "add" | "view" | "edit"
+    if "cb_selected_id" not in ss:
+        ss.cb_selected_id = None
+    if "cb_query" not in ss:
+        ss.cb_query = ""
+    if "cb_confirm_delete_id" not in ss:
+        ss.cb_confirm_delete_id = None
 
-    # ---------- UI ----------
+    # helpers
+    def _open_add():
+        ss.cb_mode = "add"
+        ss.cb_selected_id = None
+        ss.cb_confirm_delete_id = None
+
+    def _back_to_list():
+        ss.cb_mode = "list"
+        ss.cb_confirm_delete_id = None
+
+    def _select(recipe_id: int):
+        ss.cb_selected_id = recipe_id
+        ss.cb_mode = "view"
+        ss.cb_confirm_delete_id = None
+
+    def _edit(recipe_id: int):
+        ss.cb_selected_id = recipe_id
+        ss.cb_mode = "edit"
+        ss.cb_confirm_delete_id = None
+
+    # ---------- top bar ----------
     st.header("Cook Book", divider="gray")
-
     total = count_recipes()
     st.caption(f"You have **{total}** recipe{'s' if total != 1 else ''} in your cook book.")
 
-    left, right = st.columns([3, 2])
-    with left:
-        st.session_state.cb_query = st.text_input(
-            "Search recipes",
-            value=st.session_state.cb_query,
-            placeholder="Start typing… e.g., 'chi' for 'Chicken'",
-        )
-    with right:
-        c1, _, _, _ = st.columns([1, 1, 1, 1])
-        with c1:
-            if st.button("➕ Add recipe", use_container_width=True):
-                st.session_state.cb_mode = "add"
-                st.session_state.cb_selected_id = None
-                st.session_state.cb_confirm_delete_id = None
-
-    # helpers
-    def _back_to_list():
-        st.session_state.cb_mode = "list"
-        st.session_state.cb_selected_id = None
-        st.session_state.cb_confirm_delete_id = None
-
-    def _open_view(recipe_id):
-        st.session_state.cb_selected_id = recipe_id
-        st.session_state.cb_mode = "view"
-        st.session_state.cb_confirm_delete_id = None
-
-    def _open_edit(recipe_id):
-        st.session_state.cb_selected_id = recipe_id
-        st.session_state.cb_mode = "edit"
-        st.session_state.cb_confirm_delete_id = None
-
-    # ---------- add ----------
-    if st.session_state.cb_mode == "add":
+    # ========== ADD PAGE ==========
+    if ss.cb_mode == "add":
         st.subheader("Add a new recipe")
+
         with st.form("cb_add_form", clear_on_submit=False):
             title = st.text_input("Title *", placeholder="e.g., Chicken Wings")
             ingredients = st.text_area("Ingredients", placeholder="One per line…")
             instructions = st.text_area("Instructions", placeholder="Steps…")
 
-            # ⬇️ Image upload directly under instructions
+            # Image upload right under instructions
             uploaded_img = st.file_uploader(
                 "Recipe image (optional)",
                 type=["png", "jpg", "jpeg", "webp"],
                 help="Upload a photo for this recipe."
             )
 
-            save = st.form_submit_button("Save")
-            cancel = st.form_submit_button("Cancel", type="secondary")
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                save = st.form_submit_button("Save", use_container_width=True)
+            with c2:
+                cancel = st.form_submit_button("Cancel", type="secondary", use_container_width=True)
 
         if cancel:
             _back_to_list()
@@ -144,137 +137,170 @@ def render():
                 except Exception as e:
                     st.error(f"Could not add recipe: {e}")
 
-    # ---------- view / edit ----------
-    elif st.session_state.cb_mode in ("view", "edit") and st.session_state.cb_selected_id is not None:
-        try:
-            recipe = get_recipe(st.session_state.cb_selected_id)
-        except Exception as e:
-            recipe = None
-            st.error(f"Failed to load recipe: {e}")
+        # Nothing else on the add page
+        return
 
-        if not recipe:
-            st.info("Recipe not found. It may have been deleted.")
-            _back_to_list()
-            st.rerun()
+    # ========== LIST + RIGHT PANEL LAYOUT (default, view, edit) ==========
+    # Left: dynamic search + alphabetical list (ALWAYS visible except on Add page)
+    # Right: selected recipe (view/edit)
+    left, right = st.columns([2.2, 3])
 
-        rid = _get_id(recipe)
-        rtitle = _normalize_title(recipe)
-        ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
-        rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
-        rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
+    with left:
+        # Dynamic search (updates on every keystroke)
+        ss.cb_query = st.text_input(
+            "Search recipes",
+            value=ss.cb_query,
+            placeholder="Start typing… e.g., 'chi' for 'Chicken'",
+        )
 
-        if st.session_state.cb_mode == "view":
-            st.subheader(rtitle or "Untitled")
-
-            # Image preview (if any)
-            if rimg:
-                st.image(rimg, caption=rtitle or "Recipe image", use_container_width=True)
-
-            if ringing:
-                with st.expander("Ingredients", expanded=True):
-                    st.markdown(f"```\n{ringing}\n```")
-            if rinstr:
-                with st.expander("Instructions", expanded=True):
-                    st.markdown(rinstr)
-
-            b1, b2, _ = st.columns([1, 1, 6])
-            with b1:
-                if st.button("✏️ Edit", use_container_width=True):
-                    _open_edit(rid)
-                    st.rerun()
-            with b2:
-                if st.button("🗑️ Remove", use_container_width=True):
-                    st.session_state.cb_confirm_delete_id = rid
-
-            if st.session_state.cb_confirm_delete_id == rid:
-                st.warning("Are you sure you want to delete this recipe?")
-                dc1, dc2, _ = st.columns([1, 1, 6])
-                with dc1:
-                    if st.button("Yes, delete", type="primary", use_container_width=True):
-                        try:
-                            delete_recipe(rid)
-                            st.toast("Recipe deleted.", icon="🗑️")
-                            _back_to_list()
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Could not delete: {e}")
-                with dc2:
-                    if st.button("No, cancel", use_container_width=True):
-                        st.session_state.cb_confirm_delete_id = None
-                        st.rerun()
-
-            if st.button("← Back"):
-                _back_to_list()
-                st.rerun()
-
-        elif st.session_state.cb_mode == "edit":
-            st.subheader(f"Edit: {rtitle or 'Untitled'}")
-            with st.form("cb_edit_form"):
-                new_title = st.text_input("Title *", value=rtitle)
-                new_ing = st.text_area("Ingredients", value=ringing)
-                new_instr = st.text_area("Instructions", value=rinstr)
-
-                if rimg:
-                    st.image(rimg, caption="Current image", use_container_width=True)
-
-                e_uploaded = st.file_uploader(
-                    "Replace image (optional)",
-                    type=["png", "jpg", "jpeg", "webp"],
-                    help="Upload to replace or add an image. Leave empty to keep current."
-                )
-
-                save = st.form_submit_button("Save changes")
-                cancel = st.form_submit_button("Cancel", type="secondary")
-
-            if cancel:
-                _open_view(rid)
-                st.rerun()
-
-            if save:
-                if not new_title.strip():
-                    st.error("Title is required.")
-                else:
-                    try:
-                        replace = e_uploaded is not None
-                        img_bytes = img_mime = img_name = None
-                        if replace:
-                            img_bytes = e_uploaded.getvalue()
-                            img_mime = e_uploaded.type
-                            img_name = e_uploaded.name
-
-                        update_recipe(
-                            recipe_id=rid,
-                            title=new_title.strip(),
-                            ingredients=new_ing.strip(),
-                            instructions=new_instr.strip(),
-                            image_bytes=img_bytes if replace else None,
-                            image_mime=img_mime if replace else None,
-                            image_filename=img_name if replace else None,
-                            keep_existing_image=not replace,
-                        )
-                        st.toast("Recipe updated.", icon="✏️")
-                        _open_view(rid)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Could not update: {e}")
-
-    # ---------- list ----------
-    if st.session_state.cb_mode == "list":
+        # Fetch & filter once per rerun
         all_recipes: List[Any] = list_recipes() or []
         all_recipes.sort(key=lambda x: _normalize_title(x).lower())
-        filtered = _filter_by_query(all_recipes, st.session_state.cb_query)
+        filtered = _filter_by_query(all_recipes, ss.cb_query)
         buckets = _group_by_letter(filtered)
 
-        for ch in string.ascii_uppercase:
-            items = buckets[ch]
-            st.markdown(f"### {ch}")
-            if not items:
-                st.caption("—")
-            else:
+        # Add recipe button (list stays visible; Add opens separate page)
+        if st.button("➕ Add recipe", use_container_width=True):
+            _open_add()
+            st.rerun()
+
+        # Render only letters that have items (cleaner, highlights dynamic filtering)
+        if not filtered:
+            st.info("No recipes match your search.")
+        else:
+            for ch, items in buckets.items():
+                if not items:
+                    continue
+                st.markdown(f"### {ch}")
                 for r in items:
                     title = _normalize_title(r)
                     rid = _get_id(r)
-                    if st.button(title, key=f"row_{ch}_{rid}", use_container_width=True):
-                        _open_view(rid)
+                    # current selection visual hint
+                    is_selected = (ss.cb_selected_id == rid)
+                    label = f"🔸 {title}" if is_selected else title
+                    if st.button(label, key=f"row_{ch}_{rid}", use_container_width=True):
+                        _select(rid)
                         st.rerun()
-            st.divider()
+                st.divider()
+
+    with right:
+        # If nothing selected yet, show a hint
+        if ss.cb_selected_id is None:
+            st.caption("Select a recipe on the left to view / edit it.")
+        else:
+            # Load selected recipe
+            try:
+                recipe = get_recipe(ss.cb_selected_id)
+            except Exception as e:
+                recipe = None
+                st.error(f"Failed to load recipe: {e}")
+
+            if not recipe:
+                st.info("Recipe not found. It may have been deleted.")
+                ss.cb_selected_id = None
+                st.rerun()
+
+            rid = _get_id(recipe)
+            rtitle = _normalize_title(recipe)
+            ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
+            rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
+            rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
+
+            if ss.cb_mode == "view":
+                st.subheader(rtitle or "Untitled")
+
+                # Image preview (if any)
+                if rimg:
+                    st.image(rimg, caption=rtitle or "Recipe image", use_container_width=True)
+
+                if ringing:
+                    with st.expander("Ingredients", expanded=True):
+                        st.markdown(f"```\n{ringing}\n```")
+                if rinstr:
+                    with st.expander("Instructions", expanded=True):
+                        st.markdown(rinstr)
+
+                c1, c2, c3 = st.columns([1, 1, 1])
+                with c1:
+                    if st.button("✏️ Edit", use_container_width=True):
+                        _edit(rid)
+                        st.rerun()
+                with c2:
+                    if st.button("🗑️ Remove", use_container_width=True):
+                        ss.cb_confirm_delete_id = rid
+                with c3:
+                    if st.button("↩︎ Deselect", use_container_width=True):
+                        ss.cb_selected_id = None
+                        st.rerun()
+
+                if ss.cb_confirm_delete_id == rid:
+                    st.warning("Are you sure you want to delete this recipe?")
+                    dc1, dc2 = st.columns([1, 1])
+                    with dc1:
+                        if st.button("Yes, delete", type="primary", use_container_width=True):
+                            try:
+                                delete_recipe(rid)
+                                st.toast("Recipe deleted.", icon="🗑️")
+                                ss.cb_selected_id = None
+                                ss.cb_confirm_delete_id = None
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Could not delete: {e}")
+                    with dc2:
+                        if st.button("No, cancel", use_container_width=True):
+                            ss.cb_confirm_delete_id = None
+                            st.rerun()
+
+            elif ss.cb_mode == "edit":
+                st.subheader(f"Edit: {rtitle or 'Untitled'}")
+                with st.form("cb_edit_form"):
+                    new_title = st.text_input("Title *", value=rtitle)
+                    new_ing = st.text_area("Ingredients", value=ringing)
+                    new_instr = st.text_area("Instructions", value=rinstr)
+
+                    if rimg:
+                        st.image(rimg, caption="Current image", use_container_width=True)
+
+                    e_uploaded = st.file_uploader(
+                        "Replace image (optional)",
+                        type=["png", "jpg", "jpeg", "webp"],
+                        help="Upload to replace or add an image. Leave empty to keep current."
+                    )
+
+                    c1, c2 = st.columns([1, 1])
+                    with c1:
+                        save = st.form_submit_button("Save changes", use_container_width=True)
+                    with c2:
+                        cancel = st.form_submit_button("Cancel", type="secondary", use_container_width=True)
+
+                if cancel:
+                    ss.cb_mode = "view"
+                    st.rerun()
+
+                if save:
+                    if not new_title.strip():
+                        st.error("Title is required.")
+                    else:
+                        try:
+                            replace = e_uploaded is not None
+                            img_bytes = img_mime = img_name = None
+                            if replace:
+                                img_bytes = e_uploaded.getvalue()
+                                img_mime = e_uploaded.type
+                                img_name = e_uploaded.name
+
+                            update_recipe(
+                                recipe_id=rid,
+                                title=new_title.strip(),
+                                ingredients=new_ing.strip(),
+                                instructions=new_instr.strip(),
+                                image_bytes=img_bytes if replace else None,
+                                image_mime=img_mime if replace else None,
+                                image_filename=img_name if replace else None,
+                                keep_existing_image=not replace,
+                            )
+                            st.toast("Recipe updated.", icon="✏️")
+                            ss.cb_mode = "view"
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Could not update: {e}")
