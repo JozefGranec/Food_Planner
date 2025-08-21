@@ -149,6 +149,12 @@ def render():
             placeholder="Start typing… e.g., 'chi' for 'Chicken'",
         )
 
+        # Compute the letter to auto-jump to (first ASCII letter typed)
+        jump_letter = None
+        q = (ss.cb_query or "").strip()
+        if q and q[0].isalpha():
+            jump_letter = q[0].upper()
+
         all_recipes: List[Any] = list_recipes() or []
         all_recipes.sort(key=lambda x: _normalize_title(x).lower())
 
@@ -159,10 +165,12 @@ def render():
             _open_add()
             st.rerun()
 
-        # ALWAYS render A-Z. Show em dash if empty.
+        # ALWAYS render A-Z with stable anchors; show em dash if no items
         for ch in string.ascii_uppercase:
-            items = buckets.get(ch, [])
+            # Invisible anchor (target for auto-scroll)
+            st.markdown(f"<a id='sec-{ch}'></a>", unsafe_allow_html=True)
             st.markdown(f"### {ch}")
+            items = buckets.get(ch, [])
             if not items:
                 st.caption("—")
             else:
@@ -294,3 +302,14 @@ def render():
                             st.rerun()
                         except Exception as e:
                             st.error(f"Could not update: {e}")
+
+    # ===== AUTO-JUMP (after anchors exist) =====
+    # If user typed a letter first, jump to that letter's header.
+    # Uses a tiny meta refresh to navigate to the hash; no JS required.
+    q = (st.session_state.cb_query or "").strip()
+    if q and q[0].isalpha():
+        first_letter = q[0].upper()
+        st.markdown(
+            f"<meta http-equiv='refresh' content='0; url=#sec-{first_letter}'>",
+            unsafe_allow_html=True,
+        )
