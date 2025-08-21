@@ -144,7 +144,7 @@ def render():
                     st.error(f"Could not add recipe: {e}")
         return  # Add page shows nothing else
 
-    # ========== VIEW PAGE (dedicated full-width, READ-ONLY) ==========
+    # ========== VIEW PAGE (full-width, READ-ONLY form) ==========
     if ss.cb_mode == "view":
         recipe = None
         if ss.cb_selected_id is not None:
@@ -165,22 +165,27 @@ def render():
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
 
-        # Title first
-        st.subheader(rtitle or "Untitled")
+        # 🔒 Read-only form that mirrors the "Add" layout
+        with st.form("cb_view_readonly"):
+            st.text_input("Title *", value=rtitle or "Untitled", disabled=True)
 
-        # Image directly underneath title (read-only view)
-        if rimg:
-            st.image(rimg, caption=rtitle or "Recipe image", use_container_width=True)
+            st.file_uploader(
+                "Recipe image (optional)",
+                type=["png", "jpg", "jpeg", "webp"],
+                help="Add a photo for this recipe.",
+                disabled=True,
+                key="view_disabled_uploader",
+            )
+            if rimg:
+                st.image(rimg, caption=rtitle or "Recipe image", use_container_width=True)
 
-        # Read-only content (no inputs here)
-        if ringing:
-            with st.expander("Ingredients", expanded=True):
-                st.markdown(f"```\n{ringing}\n```")
-        if rinstr:
-            with st.expander("Instructions", expanded=True):
-                st.markdown(rinstr)
+            st.text_area("Ingredients", value=ringing, disabled=True)
+            st.text_area("Instructions", value=rinstr, disabled=True)
 
-        # Actions BELOW the content
+            # Dummy submit just to keep form styling consistent (hidden)
+            st.form_submit_button(" ", disabled=True, help="View mode")
+
+        # Actions BELOW the form
         c1, c2, c3 = st.columns([1, 1, 1])
         with c1:
             if st.button("✏️ Edit", use_container_width=True, key="view_edit_btn"):
@@ -246,7 +251,7 @@ def render():
                 help="Upload to replace/add an image."
             )
 
-            # Show current image if exists
+            # Show current image if exists (and no replacement selected yet)
             if rimg and e_uploaded is None:
                 st.image(rimg, caption="Current image", use_container_width=True)
 
