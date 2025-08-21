@@ -73,7 +73,7 @@ def render():
         """Return a PIL image preview resized to max 100x100 (no upscaling)."""
         im = Image.open(file)
         im = im.copy()
-        im.thumbnail((100, 100))
+        im.thumbnail((200, 200))
         return im
 
     # ---------- session ----------
