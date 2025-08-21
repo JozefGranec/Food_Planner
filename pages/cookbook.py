@@ -77,6 +77,14 @@ def render():
         im.thumbnail((200, 200))
         return im
 
+    # Render multi-line plain text with preserved newlines (normal font size)
+    def _render_multiline(label: str, text: str):
+        if not (text or "").strip():
+            return
+        st.markdown(f"**{html.escape(label)}**")
+        safe = html.escape(text).replace("\n", "<br>")
+        st.markdown(f"<div>{safe}</div>", unsafe_allow_html=True)
+
     # ---------- session ----------
     ss = st.session_state
     if "cb_mode" not in ss:
@@ -174,7 +182,7 @@ def render():
                     st.error(f"Could not add recipe: {e}")
         return  # Add page shows nothing else
 
-    # ========== VIEW PAGE (preview: big bold title + image only) ==========
+    # ========== VIEW PAGE (preview: big bold title + image + text, no inputs) ==========
     if ss.cb_mode == "view":
         recipe = None
         if ss.cb_selected_id is not None:
@@ -192,6 +200,8 @@ def render():
         rid = _get_id(recipe)
         rtitle = _normalize_title(recipe) or "Untitled"
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
+        ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
+        rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
 
         # Title only: bold + larger font (escaped for safety)
         safe_title = html.escape(rtitle)
@@ -204,11 +214,15 @@ def render():
             unsafe_allow_html=True,
         )
 
-        # Image only (no uploader, no other fields)
+        # Image (no uploader)
         if rimg:
             st.image(rimg, caption=None)  # intrinsic size, no stretching
         else:
             st.caption("No image uploaded.")
+
+        # Read-only text (normal size)
+        _render_multiline("Ingredients", ringing)
+        _render_multiline("Instructions", rinstr)
 
         st.divider()
 
