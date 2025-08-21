@@ -1,7 +1,7 @@
 # pages/cookbook.py
 import streamlit as st
 import string
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from food.db import (
     init_db,
@@ -19,20 +19,25 @@ def render():
     # ---------- utilities ----------
     def _normalize_title(r: Any) -> str:
         if isinstance(r, dict):
-            return str(r.get("title") or r.get("name") or r.get("Title") or "")
+            return str(r.get("title") or "")
         if isinstance(r, (list, tuple)):
             return str(r[1]) if len(r) > 1 else str(r[0])
         return str(r)
 
     def _get_id(r: Any) -> Any:
         if isinstance(r, dict):
-            return r.get("id") or r.get("recipe_id") or r.get("ID")
+            return r.get("id")
         if isinstance(r, (list, tuple)):
             return r[0]
         return None
 
+    def _filter_by_query(recipes: List[Any], q: str) -> List[Any]:
+        q = (q or "").strip().lower()
+        if not q:
+            return recipes
+        return [r for r in recipes if q in _normalize_title(r).lower()]
+
     def _group_by_letter(recipes: List[Any]) -> Dict[str, List[Any]]:
-        # Always create A–Z buckets; fill with results.
         buckets: Dict[str, List[Any]] = {ch: [] for ch in string.ascii_uppercase}
         for r in recipes:
             t = _normalize_title(r).strip()
@@ -41,16 +46,9 @@ def render():
             first = t[0].upper()
             key = first if first in buckets else "Z"
             buckets[key].append(r)
-        # Sort each bucket alphabetically by normalized title
         for k in buckets:
             buckets[k].sort(key=lambda x: _normalize_title(x).lower())
         return buckets
-
-    def _filter_by_query(recipes: List[Any], q: str) -> List[Any]:
-        q = (q or "").strip().lower()
-        if not q:
-            return recipes
-        return [r for r in recipes if q in _normalize_title(r).lower()]
 
     # ---------- session ----------
     ss = st.session_state
@@ -72,7 +70,6 @@ def render():
     def _back_to_list():
         ss.cb_mode = "list"
         ss.cb_confirm_delete_id = None
-        # keep current search text so user doesn't lose their filter
 
     def _select(recipe_id: int):
         ss.cb_selected_id = recipe_id
@@ -153,8 +150,8 @@ def render():
         )
 
         all_recipes: List[Any] = list_recipes() or []
-        # Ensure alphabetical list order before grouping
         all_recipes.sort(key=lambda x: _normalize_title(x).lower())
+
         filtered = _filter_by_query(all_recipes, ss.cb_query)
         buckets = _group_by_letter(filtered)
 
