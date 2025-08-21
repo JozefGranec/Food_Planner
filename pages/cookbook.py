@@ -56,7 +56,7 @@ def render():
 
     def _resize_image_to_max_400(file) -> (bytes, str, str):
         """
-        Resize uploaded image to max 400x400 while preserving aspect ratio.
+        Resize uploaded image to max 100x100 while preserving aspect ratio.
         Returns (img_bytes, mime_type, original_filename).
         """
         image = Image.open(file)
