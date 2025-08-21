@@ -77,6 +77,163 @@ def render():
         im.thumbnail((200, 200))
         return im
 
+    # ---------- ingredients helpers ----------
+    def _rows_from_text(ingredients_text: str) -> List[Dict[str, str]]:
+        """
+        Parse ingredients from stored text.
+        Expected saved format (TSV-like): 'name<TAB>amount<TAB>unit' per line.
+        Backwards compatible with older free-form text: produce one row with 'name' as the whole line.
+        """
+        rows: List[Dict[str, str]] = []
+        text = (ingredients_text or "").strip()
+        if not text:
+            return rows
+        lines = text.splitlines()
+        for line in lines:
+            # Try to split as TSV (3 fields)
+            parts = line.split("\t")
+            if len(parts) >= 3:
+                name = parts[0].strip()
+                amount = parts[1].strip()
+                unit = parts[2].strip()
+                if name or amount or unit:
+                    rows.append({"name": name, "amount": amount, "unit": unit})
+            else:
+                # Fallback: treat the whole line as the name
+                name = line.strip()
+                if name:
+                    rows.append({"name": name, "amount": "", "unit": ""})
+        return rows
+
+    def _text_from_rows(rows: List[Dict[str, str]]) -> str:
+        """
+        Build TSV-like text from ingredient rows: 'name<TAB>amount<TAB>unit' per line.
+        Empty-name rows are ignored.
+        """
+        out_lines = []
+        for r in rows:
+            name = (r.get("name") or "").strip()
+            amount = (r.get("amount") or "").strip()
+            unit = (r.get("unit") or "").strip()
+            if name:  # only keep rows with a name
+                out_lines.append(f"{name}\t{amount}\t{unit}")
+        return "\n".join(out_lines)
+
+    def _render_ingredients_preview(ingredients_text: str):
+        """
+        Render ingredients as a clean bullet list in preview mode.
+        Uses parsed rows; falls back to raw text if nothing parses.
+        """
+        rows = _rows_from_text(ingredients_text)
+        if rows:
+            bullets = []
+            for r in rows:
+                name = r.get("name", "").strip()
+                amount = r.get("amount", "").strip()
+                unit = r.get("unit", "").strip()
+                suffix = ""
+                if amount and unit:
+                    suffix = f" — {amount} {unit}"
+                elif amount:
+                    suffix = f" — {amount}"
+                elif unit:
+                    suffix = f" — {unit}"
+                # escape for markdown
+                safe_line = html.escape(f"{name}{suffix}")
+                bullets.append(f"- {safe_line}")
+            st.markdown("**Ingredients**")
+            st.markdown("\n".join(bullets))
+        else:
+            # fall back to raw text block
+            txt = (ingredients_text or "").strip()
+            if txt:
+                st.markdown("**Ingredients**")
+                safe = html.escape(txt).replace("\n", "<br>")
+                st.markdown(f"<div>{safe}</div>", unsafe_allow_html=True)
+
+    def _ingredients_table_editor(state_key_prefix: str) -> List[Dict[str, str]]:
+        """
+        Render a table-like editor for ingredients using Streamlit inputs.
+        Returns the updated list of rows from the current widget values.
+        Uses st.session_state to persist between reruns.
+        """
+        # Ensure list exists in session
+        if f"{state_key_prefix}_rows" not in st.session_state:
+            st.session_state[f"{state_key_prefix}_rows"] = [{"name": "", "amount": "", "unit": ""}]
+
+        rows: List[Dict[str, str]] = st.session_state[f"{state_key_prefix}_rows"]
+
+        st.markdown("**Ingredients**")
+
+        # Header
+        hc1, hc2, hc3, hc4, hc5 = st.columns([0.3, 3.0, 1.2, 1.2, 0.7])
+        with hc1:
+            st.markdown("**•**")
+        with hc2:
+            st.markdown("**Name**")
+        with hc3:
+            st.markdown("**Amount**")
+        with hc4:
+            st.markdown("**Unit**")
+        with hc5:
+            st.markdown(" ")  # spacer for delete column
+
+        # Collect updates
+        updated_rows: List[Dict[str, str]] = []
+        delete_index = None
+
+        for i, r in enumerate(rows):
+            c1, c2, c3, c4, c5 = st.columns([0.3, 3.0, 1.2, 1.2, 0.7])
+            with c1:
+                st.markdown("•")
+            with c2:
+                name = st.text_input(
+                    label=f"Name {i}",
+                    value=r.get("name", ""),
+                    key=f"{state_key_prefix}_name_{i}",
+                    label_visibility="collapsed",
+                    placeholder="e.g., Flour",
+                )
+            with c3:
+                amount = st.text_input(
+                    label=f"Amount {i}",
+                    value=r.get("amount", ""),
+                    key=f"{state_key_prefix}_amt_{i}",
+                    label_visibility="collapsed",
+                    placeholder="e.g., 200",
+                )
+            with c4:
+                unit = st.text_input(
+                    label=f"Unit {i}",
+                    value=r.get("unit", ""),
+                    key=f"{state_key_prefix}_unit_{i}",
+                    label_visibility="collapsed",
+                    placeholder="e.g., g",
+                )
+            with c5:
+                if st.button("✖", key=f"{state_key_prefix}_del_{i}", help="Delete this row"):
+                    delete_index = i
+            updated_rows.append({"name": name, "amount": amount, "unit": unit})
+
+        # Row deletion
+        if delete_index is not None:
+            if 0 <= delete_index < len(updated_rows):
+                updated_rows.pop(delete_index)
+                if not updated_rows:
+                    updated_rows = [{"name": "", "amount": "", "unit": ""}]
+            st.session_state[f"{state_key_prefix}_rows"] = updated_rows
+            st.rerun()
+
+        # Add row button
+        if st.button("➕ Add row", key=f"{state_key_prefix}_addrow"):
+            updated_rows.append({"name": "", "amount": "", "unit": ""})
+            st.session_state[f"{state_key_prefix}_rows"] = updated_rows
+            st.rerun()
+
+        # Persist latest values
+        st.session_state[f"{state_key_prefix}_rows"] = updated_rows
+        return updated_rows
+
     # Render multi-line plain text with preserved newlines + nice spacing
     def _render_multiline(label: str, text: str, top_margin: str = "1rem"):
         txt = (text or "").strip()
@@ -110,6 +267,8 @@ def render():
         ss.cb_mode = "add"
         ss.cb_selected_id = None
         ss.cb_confirm_delete_id = None
+        # reset ingredients editor state
+        st.session_state.pop("add_ing_rows", None)
 
     def _back_to_list():
         ss.cb_mode = "list"
@@ -125,6 +284,8 @@ def render():
         ss.cb_selected_id = recipe_id
         ss.cb_mode = "edit"
         ss.cb_confirm_delete_id = None
+        # reset editor; will initialize from recipe on render
+        st.session_state.pop("edit_ing_rows", None)
 
     # ---------- header ----------
     st.header("Cook Book", divider="gray")
@@ -135,60 +296,61 @@ def render():
     if ss.cb_mode == "add":
         st.subheader("Add a new recipe")
 
-        with st.form("cb_add_form", clear_on_submit=False):
-            # Title first
-            title = st.text_input("Title *", placeholder="e.g., Chicken Wings")
+        # Initialize ingredients editor storage for Add
+        if "add_ing_rows" not in st.session_state:
+            st.session_state["add_ing_rows"] = [{"name": "", "amount": "", "unit": ""}]
 
-            # Image uploader DIRECTLY under title (+ live preview at natural size)
-            uploaded_img = st.file_uploader(
-                "Recipe image (optional)",
-                type=["png", "jpg", "jpeg", "webp"],
-                help="Add a photo for this recipe."
-            )
-            if uploaded_img is not None:
-                try:
-                    preview_im = _pil_preview_200(uploaded_img)
-                    # show at intrinsic size (no stretching)
-                    st.image(preview_im, caption="Selected image (preview)")
-                except Exception:
-                    st.warning("Could not preview this image format, but it will still be saved after resizing.")
+        # Not using a form for the whole page so we can add/delete rows without form submit limitations
+        title = st.text_input("Title *", placeholder="e.g., Chicken Wings")
 
-            ingredients = st.text_area("Ingredients", placeholder="One per line…")
-            instructions = st.text_area("Instructions", placeholder="Steps…")
+        uploaded_img = st.file_uploader(
+            "Recipe image (optional)",
+            type=["png", "jpg", "jpeg", "webp"],
+            help="Add a photo for this recipe."
+        )
+        if uploaded_img is not None:
+            try:
+                preview_im = _pil_preview_200(uploaded_img)
+                st.image(preview_im, caption="Selected image (preview)")
+            except Exception:
+                st.warning("Could not preview this image format, but it will still be saved after resizing.")
 
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                save = st.form_submit_button("Save", use_container_width=True)
-            with c2:
-                cancel = st.form_submit_button("Cancel", type="secondary", use_container_width=True)
+        # Ingredients table editor
+        add_rows = _ingredients_table_editor("add_ing")
 
-        if cancel:
-            _back_to_list()
-            st.rerun()
+        instructions = st.text_area("Instructions", placeholder="Steps…")
 
-        if save:
-            if not title.strip():
-                st.error("Title is required.")
-            else:
-                try:
-                    img_bytes = img_mime = img_name = None
-                    if uploaded_img is not None:
-                        # Resize to max 200x200 for storage
-                        img_bytes, img_mime, img_name = _resize_image_to_max_200(uploaded_img)
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("Save", use_container_width=True, key="add_save_btn"):
+                if not title.strip():
+                    st.error("Title is required.")
+                else:
+                    try:
+                        img_bytes = img_mime = img_name = None
+                        if uploaded_img is not None:
+                            img_bytes, img_mime, img_name = _resize_image_to_max_200(uploaded_img)
 
-                    add_recipe(
-                        title=title.strip(),
-                        ingredients=ingredients.strip(),
-                        instructions=instructions.strip(),
-                        image_bytes=img_bytes,
-                        image_mime=img_mime,
-                        image_filename=img_name,
-                    )
-                    st.toast(f"Recipe “{title.strip()}” added.", icon="✅")
-                    _back_to_list()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Could not add recipe: {e}")
+                        ingredients_text = _text_from_rows(add_rows)
+
+                        add_recipe(
+                            title=title.strip(),
+                            ingredients=ingredients_text,
+                            instructions=instructions.strip(),
+                            image_bytes=img_bytes,
+                            image_mime=img_mime,
+                            image_filename=img_name,
+                        )
+                        st.toast(f"Recipe “{title.strip()}” added.", icon="✅")
+                        _back_to_list()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not add recipe: {e}")
+        with c2:
+            if st.button("Cancel", use_container_width=True, key="add_cancel_btn"):
+                _back_to_list()
+                st.rerun()
+
         return  # Add page shows nothing else
 
     # ========== VIEW PAGE (preview: big bold title + image + text, no inputs) ==========
@@ -212,7 +374,7 @@ def render():
         ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
 
-        # Title only: bold + larger font (escaped for safety) with extra bottom margin
+        # Title only: bold + larger font
         safe_title = html.escape(rtitle)
         st.markdown(
             f"""
@@ -223,15 +385,18 @@ def render():
             unsafe_allow_html=True,
         )
 
-        # Image (no uploader)
+        # Image
         if rimg:
-            st.image(rimg, caption=None)  # intrinsic size, no stretching
+            st.image(rimg, caption=None)
         else:
             st.caption("No image uploaded.")
 
-        # Read-only text (normal size) with comfortable spacing
-        _render_multiline("Ingredients", ringing, top_margin="1rem")
-        _render_multiline("Instructions", rinstr, top_margin="1.2rem")
+        # Ingredients as bullet list
+        _render_ingredients_preview(ringing)
+
+        # Instructions plain text (if any)
+        if (rinstr or "").strip():
+            _render_multiline("Instructions", rinstr, top_margin="1.2rem")
 
         st.divider()
 
@@ -268,7 +433,7 @@ def render():
                     st.rerun()
         return  # View page done
 
-    # ========== EDIT PAGE (dedicated full-width; fields visible here) ==========
+    # ========== EDIT PAGE (table editor visible here) ==========
     if ss.cb_mode == "edit":
         recipe = None
         if ss.cb_selected_id is not None:
@@ -285,77 +450,81 @@ def render():
 
         rid = _get_id(recipe)
         rtitle = _normalize_title(recipe)
-        ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
-        rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
+        orig_ing_text = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
+        rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
 
         st.subheader(f"Edit: {rtitle or 'Untitled'}")
-        with st.form("cb_edit_form"):
-            # Title
-            new_title = st.text_input("Title *", value=rtitle or "")
 
-            # Uploader under title
-            e_uploaded = st.file_uploader(
-                "Change or add image (optional)",
-                type=["png", "jpg", "jpeg", "webp"],
-                help="Upload to replace/add an image."
-            )
+        # Initialize editor rows for edit mode once per recipe
+        if "edit_ing_rows" not in st.session_state:
+            st.session_state["edit_ing_rows"] = _rows_from_text(orig_ing_text) or [{"name": "", "amount": "", "unit": ""}]
 
-            # Show current (intrinsic size) if no replacement selected yet
-            if rimg and e_uploaded is None:
-                st.image(rimg, caption="Current image")
+        new_title = st.text_input("Title *", value=rtitle or "")
 
-            # If a new file is selected, preview resized version at intrinsic size
-            if e_uploaded is not None:
-                try:
-                    preview_im = _pil_preview_200(e_uploaded)
-                    st.image(preview_im, caption="New image (preview)")
-                except Exception:
-                    st.warning("Could not preview this image format, but it will still be saved after resizing.")
+        e_uploaded = st.file_uploader(
+            "Change or add image (optional)",
+            type=["png", "jpg", "jpeg", "webp"],
+            help="Upload to replace/add an image."
+        )
 
-            new_ing = st.text_area("Ingredients", value=ringing)
-            new_instr = st.text_area("Instructions", value=rinstr)
+        if rimg and e_uploaded is None:
+            st.image(rimg, caption="Current image")
 
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                save = st.form_submit_button("Save changes", use_container_width=True)
-            with c2:
-                cancel = st.form_submit_button("Cancel", type="secondary", use_container_width=True)
+        if e_uploaded is not None:
+            try:
+                preview_im = _pil_preview_200(e_uploaded)
+                st.image(preview_im, caption="New image (preview)")
+            except Exception:
+                st.warning("Could not preview this image format, but it will still be saved after resizing.")
 
-        if cancel:
-            ss.cb_mode = "view"
-            st.rerun()
+        # Ingredients table editor
+        edit_rows = _ingredients_table_editor("edit_ing")
 
-        if save:
-            if not new_title.strip():
-                st.error("Title is required.")
-            else:
-                try:
-                    replace = e_uploaded is not None
-                    img_bytes = img_mime = img_name = None
-                    if replace:
-                        img_bytes, img_mime, img_name = _resize_image_to_max_200(e_uploaded)
+        new_instr = st.text_area("Instructions", value=rinstr)
 
-                    update_recipe(
-                        recipe_id=rid,
-                        title=new_title.strip(),
-                        ingredients=new_ing.strip(),
-                        instructions=new_instr.strip(),
-                        image_bytes=img_bytes if replace else None,
-                        image_mime=img_mime if replace else None,
-                        image_filename=img_name if replace else None,
-                        keep_existing_image=not replace,
-                    )
-                    st.toast("Recipe updated.", icon="✏️")
-                    ss.cb_mode = "view"
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Could not update: {e}")
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            if st.button("Save changes", use_container_width=True, key="edit_save_btn"):
+                if not new_title.strip():
+                    st.error("Title is required.")
+                else:
+                    try:
+                        replace = e_uploaded is not None
+                        img_bytes = img_mime = img_name = None
+                        if replace:
+                            img_bytes, img_mime, img_name = _resize_image_to_max_200(e_uploaded)
+
+                        ingredients_text = _text_from_rows(edit_rows)
+
+                        update_recipe(
+                            recipe_id=rid,
+                            title=new_title.strip(),
+                            ingredients=ingredients_text,
+                            instructions=new_instr.strip(),
+                            image_bytes=img_bytes if replace else None,
+                            image_mime=img_mime if replace else None,
+                            image_filename=img_name if replace else None,
+                            keep_existing_image=not replace,
+                        )
+                        st.toast("Recipe updated.", icon="✏️")
+                        ss.cb_mode = "view"
+                        # clear edit table state after save
+                        st.session_state.pop("edit_ing_rows", None)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not update: {e}")
+        with c2:
+            if st.button("Cancel", use_container_width=True, key="edit_cancel_btn"):
+                ss.cb_mode = "view"
+                # clear edit table state on cancel
+                st.session_state.pop("edit_ing_rows", None)
+                st.rerun()
+
         return  # Edit page done
 
     # ========== LIST PAGE (default) ==========
     if ss.cb_mode == "list":
-        # two columns kept for layout width balance; right is intentionally empty
         left, _ = st.columns([2.2, 3])
 
         with left:
@@ -386,7 +555,7 @@ def render():
                 _open_add()
                 st.rerun()
 
-            # Keep Enter from navigating away
+            # Prevent Enter from navigating away
             components.html(
                 """
                 <script>
