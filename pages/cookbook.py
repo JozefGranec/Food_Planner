@@ -60,7 +60,7 @@ def render():
         Returns (img_bytes, mime_type, original_filename).
         """
         image = Image.open(file)
-        image.thumbnail((400, 400))  # keeps aspect ratio, only downsizes
+        image.thumbnail((100, 100))  # keeps aspect ratio, only downsizes
         buf = io.BytesIO()
         # Preserve format if known; fallback to PNG
         fmt = image.format or "PNG"
