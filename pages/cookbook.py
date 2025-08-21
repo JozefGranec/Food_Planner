@@ -97,6 +97,7 @@ def render():
             ingredients = st.text_area("Ingredients", placeholder="One per line…")
             instructions = st.text_area("Instructions", placeholder="Steps…")
 
+            # Image upload right under instructions
             uploaded_img = st.file_uploader(
                 "Recipe image (optional)",
                 type=["png", "jpg", "jpeg", "webp"],
@@ -139,9 +140,8 @@ def render():
                     st.error(f"Could not add recipe: {e}")
         return  # Add page shows nothing else
 
-    # ========== VIEW PAGE (dedicated full-width) ==========
+    # ========== VIEW PAGE (dedicated full-width, READ-ONLY) ==========
     if ss.cb_mode == "view":
-        # Try loading the selected recipe
         recipe = None
         if ss.cb_selected_id is not None:
             try:
@@ -161,22 +161,14 @@ def render():
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
 
-        # Header row with actions
-        c1, c2, c3 = st.columns([3, 1, 1])
-        with c1:
-            st.subheader(rtitle or "Untitled")
-        with c2:
-            if st.button("✏️ Edit", use_container_width=True, key="view_edit_btn"):
-                _edit(rid)
-                st.rerun()
-        with c3:
-            if st.button("🗑️ Remove", use_container_width=True, key="view_remove_btn"):
-                ss.cb_confirm_delete_id = rid
+        # Title first
+        st.subheader(rtitle or "Untitled")
 
-        # Image & content
+        # Image directly underneath title
         if rimg:
             st.image(rimg, caption=rtitle or "Recipe image", use_container_width=True)
 
+        # Read-only content (no inputs here)
         if ringing:
             with st.expander("Ingredients", expanded=True):
                 st.markdown(f"```\n{ringing}\n```")
@@ -184,10 +176,24 @@ def render():
             with st.expander("Instructions", expanded=True):
                 st.markdown(rinstr)
 
+        # Actions BELOW the content
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c1:
+            if st.button("✏️ Edit", use_container_width=True, key="view_edit_btn"):
+                _edit(rid)
+                st.rerun()
+        with c2:
+            if st.button("🗑️ Remove", use_container_width=True, key="view_remove_btn"):
+                ss.cb_confirm_delete_id = rid
+        with c3:
+            if st.button("← Back to list", use_container_width=True, key="back_to_list_btn"):
+                _back_to_list()
+                st.rerun()
+
         # Delete confirmation
         if ss.cb_confirm_delete_id == rid:
             st.warning("Are you sure you want to delete this recipe?")
-            dc1, dc2, dc3 = st.columns([1, 1, 3])
+            dc1, dc2 = st.columns([1, 1])
             with dc1:
                 if st.button("Yes, delete", type="primary", use_container_width=True, key="confirm_delete_yes"):
                     try:
@@ -201,11 +207,6 @@ def render():
                 if st.button("No, cancel", use_container_width=True, key="confirm_delete_no"):
                     ss.cb_confirm_delete_id = None
                     st.rerun()
-
-        st.divider()
-        if st.button("← Back to list", use_container_width=True, key="back_to_list_btn"):
-            _back_to_list()
-            st.rerun()
         return  # View page done
 
     # ========== EDIT PAGE (dedicated full-width) ==========
@@ -285,7 +286,8 @@ def render():
 
     # ========== LIST PAGE (default) ==========
     if ss.cb_mode == "list":
-        left, right = st.columns([2.2, 3])
+        # two columns kept for layout width balance; right is intentionally empty
+        left, _ = st.columns([2.2, 3])
 
         with left:
             # --- Search: show only placeholder text; reduce spacing below field ---
@@ -355,7 +357,6 @@ def render():
             buckets = _group_by_letter(filtered)
 
             # ALWAYS render A–Z with anchors, even when empty
-            first_section_rendered = False
             for ch in string.ascii_uppercase:
                 st.markdown(f"<a id='sec-{ch}'></a>", unsafe_allow_html=True)  # anchor
                 st.markdown(f"### {ch}")
@@ -366,17 +367,10 @@ def render():
                     for r in items:
                         title = _normalize_title(r)
                         rid = _get_id(r)
-                        label = title
-                        if st.button(label, key=f"row_{ch}_{rid}", use_container_width=True):
+                        if st.button(title, key=f"row_{ch}_{rid}", use_container_width=True):
                             _select(rid)
                             st.rerun()
-                # Keep a subtle divider between sections
                 st.divider()
-                first_section_rendered = True
-
-        with right:
-            st.caption("Tip: Click a recipe on the left to open it in a full page. "
-                       "Use search above to filter by title.")
 
         # ===== AUTO-SCROLL to first typed character (even if no results under that letter) =====
         q = (st.session_state.cb_query or "").strip()
