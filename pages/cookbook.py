@@ -77,13 +77,22 @@ def render():
         im.thumbnail((200, 200))
         return im
 
-    # Render multi-line plain text with preserved newlines (normal font size)
-    def _render_multiline(label: str, text: str):
-        if not (text or "").strip():
+    # Render multi-line plain text with preserved newlines + nice spacing
+    def _render_multiline(label: str, text: str, top_margin: str = "1rem"):
+        txt = (text or "").strip()
+        if not txt:
             return
-        st.markdown(f"**{html.escape(label)}**")
-        safe = html.escape(text).replace("\n", "<br>")
-        st.markdown(f"<div>{safe}</div>", unsafe_allow_html=True)
+        safe_label = html.escape(label)
+        safe_text = html.escape(txt)
+        st.markdown(
+            f"""
+            <div style="margin-top:{top_margin};">
+              <div style="font-weight:600; margin-bottom:0.35rem;">{safe_label}</div>
+              <div style="white-space:pre-wrap;">{safe_text}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     # ---------- session ----------
     ss = st.session_state
@@ -203,11 +212,11 @@ def render():
         ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
 
-        # Title only: bold + larger font (escaped for safety)
+        # Title only: bold + larger font (escaped for safety) with extra bottom margin
         safe_title = html.escape(rtitle)
         st.markdown(
             f"""
-            <div style="font-weight: 800; font-size: 1.8rem; line-height: 1.2; margin-bottom: 0.5rem;">
+            <div style="font-weight: 800; font-size: 1.8rem; line-height: 1.2; margin-bottom: 1rem;">
               {safe_title}
             </div>
             """,
@@ -220,9 +229,9 @@ def render():
         else:
             st.caption("No image uploaded.")
 
-        # Read-only text (normal size)
-        _render_multiline("Ingredients", ringing)
-        _render_multiline("Instructions", rinstr)
+        # Read-only text (normal size) with comfortable spacing
+        _render_multiline("Ingredients", ringing, top_margin="1rem")
+        _render_multiline("Instructions", rinstr, top_margin="1.2rem")
 
         st.divider()
 
