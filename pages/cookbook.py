@@ -93,16 +93,20 @@ def render():
         st.subheader("Add a new recipe")
 
         with st.form("cb_add_form", clear_on_submit=False):
+            # Title first
             title = st.text_input("Title *", placeholder="e.g., Chicken Wings")
-            ingredients = st.text_area("Ingredients", placeholder="One per line…")
-            instructions = st.text_area("Instructions", placeholder="Steps…")
 
-            # Image upload right under instructions
+            # Image uploader DIRECTLY under title (+ live preview)
             uploaded_img = st.file_uploader(
                 "Recipe image (optional)",
                 type=["png", "jpg", "jpeg", "webp"],
-                help="Upload a photo for this recipe."
+                help="Add a photo for this recipe."
             )
+            if uploaded_img is not None:
+                st.image(uploaded_img, caption="Selected image (preview)", use_container_width=True)
+
+            ingredients = st.text_area("Ingredients", placeholder="One per line…")
+            instructions = st.text_area("Instructions", placeholder="Steps…")
 
             c1, c2 = st.columns([1, 1])
             with c1:
@@ -164,7 +168,7 @@ def render():
         # Title first
         st.subheader(rtitle or "Untitled")
 
-        # Image directly underneath title
+        # Image directly underneath title (read-only view)
         if rimg:
             st.image(rimg, caption=rtitle or "Recipe image", use_container_width=True)
 
@@ -232,18 +236,26 @@ def render():
 
         st.subheader(f"Edit: {rtitle or 'Untitled'}")
         with st.form("cb_edit_form"):
+            # Title
             new_title = st.text_input("Title *", value=rtitle)
-            new_ing = st.text_area("Ingredients", value=ringing)
-            new_instr = st.text_area("Instructions", value=rinstr)
 
-            if rimg:
+            # Image uploader DIRECTLY under title (+ show current + preview if replacing)
+            e_uploaded = st.file_uploader(
+                "Change or add image (optional)",
+                type=["png", "jpg", "jpeg", "webp"],
+                help="Upload to replace/add an image."
+            )
+
+            # Show current image if exists
+            if rimg and e_uploaded is None:
                 st.image(rimg, caption="Current image", use_container_width=True)
 
-            e_uploaded = st.file_uploader(
-                "Replace image (optional)",
-                type=["png", "jpg", "jpeg", "webp"],
-                help="Upload to replace or add an image. Leave empty to keep current."
-            )
+            # If a new file is selected, preview that instead
+            if e_uploaded is not None:
+                st.image(e_uploaded, caption="New image (preview)", use_container_width=True)
+
+            new_ing = st.text_area("Ingredients", value=ringing)
+            new_instr = st.text_area("Instructions", value=rinstr)
 
             c1, c2 = st.columns([1, 1])
             with c1:
@@ -292,7 +304,7 @@ def render():
         with left:
             # --- Search: show only placeholder text; reduce spacing below field ---
             ss.cb_query = st.text_input(
-                "",  # empty label
+                "",
                 value=ss.cb_query,
                 placeholder="Start typing… then press Enter to apply",
                 key="cb_query_input",
@@ -303,19 +315,12 @@ def render():
             st.markdown(
                 """
                 <style>
-                /* Reduce bottom margin under the search input */
-                div[data-testid="stTextInput"] {
-                    margin-bottom: 0.2rem !important;
-                }
-                /* Reduce bottom margin under the Add button container */
-                div[data-testid="stButton"] {
-                    margin-bottom: 0.2rem !important;
-                }
-                /* Tighten top/bottom margins of markdown H3 headers (### A, B, ...) */
-                div[data-testid="stMarkdown"] h3 {
-                    margin-top: 0.2rem !important;
-                    margin-bottom: 0.2rem !important;
-                }
+                  div[data-testid="stTextInput"] { margin-bottom: 0.2rem !important; }
+                  div[data-testid="stButton"]    { margin-bottom: 0.2rem !important; }
+                  div[data-testid="stMarkdown"] h3 {
+                      margin-top: 0.2rem !important;
+                      margin-bottom: 0.2rem !important;
+                  }
                 </style>
                 """,
                 unsafe_allow_html=True,
@@ -326,7 +331,7 @@ def render():
                 _open_add()
                 st.rerun()
 
-            # Prevent Enter from navigating to other pages + keep focus in app
+            # Keep Enter from navigating away
             components.html(
                 """
                 <script>
@@ -358,7 +363,7 @@ def render():
 
             # ALWAYS render A–Z with anchors, even when empty
             for ch in string.ascii_uppercase:
-                st.markdown(f"<a id='sec-{ch}'></a>", unsafe_allow_html=True)  # anchor
+                st.markdown(f"<a id='sec-{ch}'></a>", unsafe_allow_html=True)
                 st.markdown(f"### {ch}")
                 items = buckets.get(ch, [])
                 if not items:
