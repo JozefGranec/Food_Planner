@@ -32,17 +32,19 @@ def render():
         return None
 
     def _group_by_letter(recipes: List[Any]) -> Dict[str, List[Any]]:
-        buckets: Dict[str, List[Any]] = {}
+        # Always create A–Z buckets; fill with results.
+        buckets: Dict[str, List[Any]] = {ch: [] for ch in string.ascii_uppercase}
         for r in recipes:
             t = _normalize_title(r).strip()
             if not t:
                 continue
             first = t[0].upper()
-            key = first if first in string.ascii_uppercase else "Z"
-            buckets.setdefault(key, []).append(r)
+            key = first if first in buckets else "Z"
+            buckets[key].append(r)
+        # Sort each bucket alphabetically by normalized title
         for k in buckets:
             buckets[k].sort(key=lambda x: _normalize_title(x).lower())
-        return dict(sorted(buckets.items(), key=lambda kv: kv[0]))
+        return buckets
 
     def _filter_by_query(recipes: List[Any], q: str) -> List[Any]:
         q = (q or "").strip().lower()
@@ -70,6 +72,7 @@ def render():
     def _back_to_list():
         ss.cb_mode = "list"
         ss.cb_confirm_delete_id = None
+        # keep current search text so user doesn't lose their filter
 
     def _select(recipe_id: int):
         ss.cb_selected_id = recipe_id
@@ -81,7 +84,7 @@ def render():
         ss.cb_mode = "edit"
         ss.cb_confirm_delete_id = None
 
-    # ---------- top bar ----------
+    # ---------- header ----------
     st.header("Cook Book", divider="gray")
     total = count_recipes()
     st.caption(f"You have **{total}** recipe{'s' if total != 1 else ''} in your cook book.")
@@ -136,59 +139,50 @@ def render():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Could not add recipe: {e}")
+        return  # Add page shows nothing else
 
-        # Nothing else on the add page
-        return
-
-    # ========== LIST + RIGHT PANEL LAYOUT (default, view, edit) ==========
-    # Left: dynamic search + alphabetical list (ALWAYS visible except on Add page)
-    # Right: selected recipe (view/edit)
+    # ========== LIST (always A–Z) + RIGHT PANEL ==========
     left, right = st.columns([2.2, 3])
 
     with left:
-        # Dynamic search (updates on every keystroke)
+        # Dynamic search: typing triggers rerun -> list filters instantly
         ss.cb_query = st.text_input(
             "Search recipes",
             value=ss.cb_query,
             placeholder="Start typing… e.g., 'chi' for 'Chicken'",
         )
 
-        # Fetch & filter once per rerun
         all_recipes: List[Any] = list_recipes() or []
+        # Ensure alphabetical list order before grouping
         all_recipes.sort(key=lambda x: _normalize_title(x).lower())
         filtered = _filter_by_query(all_recipes, ss.cb_query)
         buckets = _group_by_letter(filtered)
 
-        # Add recipe button (list stays visible; Add opens separate page)
         if st.button("➕ Add recipe", use_container_width=True):
             _open_add()
             st.rerun()
 
-        # Render only letters that have items (cleaner, highlights dynamic filtering)
-        if not filtered:
-            st.info("No recipes match your search.")
-        else:
-            for ch, items in buckets.items():
-                if not items:
-                    continue
-                st.markdown(f"### {ch}")
+        # ALWAYS render A-Z. Show em dash if empty.
+        for ch in string.ascii_uppercase:
+            items = buckets.get(ch, [])
+            st.markdown(f"### {ch}")
+            if not items:
+                st.caption("—")
+            else:
                 for r in items:
                     title = _normalize_title(r)
                     rid = _get_id(r)
-                    # current selection visual hint
                     is_selected = (ss.cb_selected_id == rid)
                     label = f"🔸 {title}" if is_selected else title
                     if st.button(label, key=f"row_{ch}_{rid}", use_container_width=True):
                         _select(rid)
                         st.rerun()
-                st.divider()
+            st.divider()
 
     with right:
-        # If nothing selected yet, show a hint
         if ss.cb_selected_id is None:
             st.caption("Select a recipe on the left to view / edit it.")
         else:
-            # Load selected recipe
             try:
                 recipe = get_recipe(ss.cb_selected_id)
             except Exception as e:
@@ -209,7 +203,6 @@ def render():
             if ss.cb_mode == "view":
                 st.subheader(rtitle or "Untitled")
 
-                # Image preview (if any)
                 if rimg:
                     st.image(rimg, caption=rtitle or "Recipe image", use_container_width=True)
 
