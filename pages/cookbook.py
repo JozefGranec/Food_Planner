@@ -1,5 +1,6 @@
 # pages/cookbook.py
 import io
+import html  # for safely escaping text inside HTML
 import string
 from typing import List, Dict, Any
 
@@ -192,11 +193,12 @@ def render():
         rtitle = _normalize_title(recipe) or "Untitled"
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
 
-        # Title only: bold + larger font
+        # Title only: bold + larger font (escaped for safety)
+        safe_title = html.escape(rtitle)
         st.markdown(
             f"""
             <div style="font-weight: 800; font-size: 1.8rem; line-height: 1.2; margin-bottom: 0.5rem;">
-              {st.escape_markdown(rtitle)}
+              {safe_title}
             </div>
             """,
             unsafe_allow_html=True,
