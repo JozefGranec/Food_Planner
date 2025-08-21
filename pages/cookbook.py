@@ -1,6 +1,3 @@
-There is still too much space between the add recipe button and the first letter A in the alphabetical order. 
-
-
 # pages/cookbook.py
 import streamlit as st
 import streamlit.components.v1 as components
@@ -155,13 +152,22 @@ def render():
             label_visibility="collapsed",
         )
 
-        # Tighten spacing below the search input
+        # 🔹 Strong CSS compression of spacing (search → button → first header)
         st.markdown(
             """
             <style>
-            /* Reduce bottom margin under the FIRST text input in the left column */
+            /* Reduce bottom margin under the search input */
             div[data-testid="stTextInput"] {
-                margin-bottom: 0.25rem;
+                margin-bottom: 0.2rem !important;
+            }
+            /* Reduce bottom margin under the Add button container */
+            div[data-testid="stButton"] {
+                margin-bottom: 0.2rem !important;
+            }
+            /* Tighten top/bottom margins of markdown H3 headers (### A, B, ...) */
+            div[data-testid="stMarkdown"] h3 {
+                margin-top: 0.2rem !important;
+                margin-bottom: 0.2rem !important;
             }
             </style>
             """,
