@@ -54,13 +54,14 @@ def render():
             buckets[k].sort(key=lambda x: _normalize_title(x).lower())
         return buckets
 
-    def _resize_image_to_max_100(file) -> (bytes, str, str):
+    # ---- image helpers (200x200 max, preserve aspect ratio, no upscaling) ----
+    def _resize_image_to_max_200(file) -> (bytes, str, str):
         """
-        Resize uploaded image to max 100x100 while preserving aspect ratio (no upscaling).
+        Resize uploaded image to max 200x200 while preserving aspect ratio (no upscaling).
         Returns (img_bytes, mime_type, original_filename).
         """
         image = Image.open(file)
-        image.thumbnail((200, 200))  # keeps aspect ratio, only downsizes
+        image.thumbnail((200, 200))
         buf = io.BytesIO()
         fmt = image.format or "PNG"
         image.save(buf, format=fmt)
@@ -69,10 +70,9 @@ def render():
         name = getattr(file, "name", None) or f"image.{fmt.lower()}"
         return img_bytes, mime, name
 
-    def _pil_preview_100(file) -> Image.Image:
-        """Return a PIL image preview resized to max 100x100 (no upscaling)."""
-        im = Image.open(file)
-        im = im.copy()
+    def _pil_preview_200(file) -> Image.Image:
+        """Return a PIL image preview resized to max 200x200 (no upscaling)."""
+        im = Image.open(file).copy()
         im.thumbnail((200, 200))
         return im
 
@@ -129,8 +129,9 @@ def render():
             )
             if uploaded_img is not None:
                 try:
-                    preview_im = _pil_preview_100(uploaded_img)
-                    st.image(preview_im, caption="Selected image (preview)")  # no use_container_width -> no stretch
+                    preview_im = _pil_preview_200(uploaded_img)
+                    # show at intrinsic size (no stretching)
+                    st.image(preview_im, caption="Selected image (preview)")
                 except Exception:
                     st.warning("Could not preview this image format, but it will still be saved after resizing.")
 
@@ -154,8 +155,8 @@ def render():
                 try:
                     img_bytes = img_mime = img_name = None
                     if uploaded_img is not None:
-                        # Resize to max 100x100 for storage
-                        img_bytes, img_mime, img_name = _resize_image_to_max_100(uploaded_img)
+                        # Resize to max 200x200 for storage
+                        img_bytes, img_mime, img_name = _resize_image_to_max_200(uploaded_img)
 
                     add_recipe(
                         title=title.strip(),
@@ -172,7 +173,7 @@ def render():
                     st.error(f"Could not add recipe: {e}")
         return  # Add page shows nothing else
 
-    # ========== VIEW PAGE (full-width, READ-ONLY form) ==========
+    # ========== VIEW PAGE (preview: big bold title + image only) ==========
     if ss.cb_mode == "view":
         recipe = None
         if ss.cb_selected_id is not None:
@@ -188,32 +189,28 @@ def render():
             return
 
         rid = _get_id(recipe)
-        rtitle = _normalize_title(recipe)
-        ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
-        rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
+        rtitle = _normalize_title(recipe) or "Untitled"
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
 
-        # 🔒 Read-only form that mirrors the "Add" layout
-        with st.form("cb_view_readonly"):
-            st.text_input("Title *", value=rtitle or "Untitled", disabled=True)
+        # Title only: bold + larger font
+        st.markdown(
+            f"""
+            <div style="font-weight: 800; font-size: 1.8rem; line-height: 1.2; margin-bottom: 0.5rem;">
+              {st.escape_markdown(rtitle)}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-            st.file_uploader(
-                "Recipe image (optional)",
-                type=["png", "jpg", "jpeg", "webp"],
-                help="Add a photo for this recipe.",
-                disabled=True,
-                key="view_disabled_uploader",
-            )
-            if rimg:
-                # show at intrinsic size (already <=100x100), no stretching
-                st.image(rimg, caption=rtitle or "Recipe image")
+        # Image only (no uploader, no other fields)
+        if rimg:
+            st.image(rimg, caption=None)  # intrinsic size, no stretching
+        else:
+            st.caption("No image uploaded.")
 
-            st.text_area("Ingredients", value=ringing, disabled=True)
-            st.text_area("Instructions", value=rinstr, disabled=True)
+        st.divider()
 
-            st.form_submit_button(" ", disabled=True, help="View mode")
-
-        # Actions BELOW the form
+        # Actions
         c1, c2, c3 = st.columns([1, 1, 1])
         with c1:
             if st.button("✏️ Edit", use_container_width=True, key="view_edit_btn"):
@@ -227,6 +224,7 @@ def render():
                 _back_to_list()
                 st.rerun()
 
+        # Delete confirmation
         if ss.cb_confirm_delete_id == rid:
             st.warning("Are you sure you want to delete this recipe?")
             dc1, dc2 = st.columns([1, 1])
@@ -245,7 +243,7 @@ def render():
                     st.rerun()
         return  # View page done
 
-    # ========== EDIT PAGE (dedicated full-width) ==========
+    # ========== EDIT PAGE (dedicated full-width; fields visible here) ==========
     if ss.cb_mode == "edit":
         recipe = None
         if ss.cb_selected_id is not None:
@@ -268,8 +266,10 @@ def render():
 
         st.subheader(f"Edit: {rtitle or 'Untitled'}")
         with st.form("cb_edit_form"):
-            new_title = st.text_input("Title *", value=rtitle)
+            # Title
+            new_title = st.text_input("Title *", value=rtitle or "")
 
+            # Uploader under title
             e_uploaded = st.file_uploader(
                 "Change or add image (optional)",
                 type=["png", "jpg", "jpeg", "webp"],
@@ -283,7 +283,7 @@ def render():
             # If a new file is selected, preview resized version at intrinsic size
             if e_uploaded is not None:
                 try:
-                    preview_im = _pil_preview_100(e_uploaded)
+                    preview_im = _pil_preview_200(e_uploaded)
                     st.image(preview_im, caption="New image (preview)")
                 except Exception:
                     st.warning("Could not preview this image format, but it will still be saved after resizing.")
@@ -309,7 +309,7 @@ def render():
                     replace = e_uploaded is not None
                     img_bytes = img_mime = img_name = None
                     if replace:
-                        img_bytes, img_mime, img_name = _resize_image_to_max_100(e_uploaded)
+                        img_bytes, img_mime, img_name = _resize_image_to_max_200(e_uploaded)
 
                     update_recipe(
                         recipe_id=rid,
