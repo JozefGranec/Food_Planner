@@ -74,7 +74,7 @@ def render():
             placeholder="Start typing… e.g., 'chi' for 'Chicken'",
         )
     with right:
-        c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+        c1, _, _, _ = st.columns([1, 1, 1, 1])
         with c1:
             if st.button("➕ Add recipe", use_container_width=True):
                 st.session_state.cb_mode = "add"
@@ -104,6 +104,14 @@ def render():
             title = st.text_input("Title *", placeholder="e.g., Chicken Wings")
             ingredients = st.text_area("Ingredients", placeholder="One per line…")
             instructions = st.text_area("Instructions", placeholder="Steps…")
+
+            # ⬇️ Image upload directly under instructions
+            uploaded_img = st.file_uploader(
+                "Recipe image (optional)",
+                type=["png", "jpg", "jpeg", "webp"],
+                help="Upload a photo for this recipe."
+            )
+
             save = st.form_submit_button("Save")
             cancel = st.form_submit_button("Cancel", type="secondary")
 
@@ -116,10 +124,19 @@ def render():
                 st.error("Title is required.")
             else:
                 try:
+                    img_bytes = img_mime = img_name = None
+                    if uploaded_img is not None:
+                        img_bytes = uploaded_img.getvalue()
+                        img_mime = uploaded_img.type
+                        img_name = uploaded_img.name
+
                     add_recipe(
                         title=title.strip(),
                         ingredients=ingredients.strip(),
                         instructions=instructions.strip(),
+                        image_bytes=img_bytes,
+                        image_mime=img_mime,
+                        image_filename=img_name,
                     )
                     st.toast(f"Recipe “{title.strip()}” added.", icon="✅")
                     _back_to_list()
@@ -144,9 +161,15 @@ def render():
         rtitle = _normalize_title(recipe)
         ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
+        rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
 
         if st.session_state.cb_mode == "view":
             st.subheader(rtitle or "Untitled")
+
+            # Image preview (if any)
+            if rimg:
+                st.image(rimg, caption=rtitle or "Recipe image", use_container_width=True)
+
             if ringing:
                 with st.expander("Ingredients", expanded=True):
                     st.markdown(f"```\n{ringing}\n```")
@@ -190,6 +213,16 @@ def render():
                 new_title = st.text_input("Title *", value=rtitle)
                 new_ing = st.text_area("Ingredients", value=ringing)
                 new_instr = st.text_area("Instructions", value=rinstr)
+
+                if rimg:
+                    st.image(rimg, caption="Current image", use_container_width=True)
+
+                e_uploaded = st.file_uploader(
+                    "Replace image (optional)",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    help="Upload to replace or add an image. Leave empty to keep current."
+                )
+
                 save = st.form_submit_button("Save changes")
                 cancel = st.form_submit_button("Cancel", type="secondary")
 
@@ -202,11 +235,22 @@ def render():
                     st.error("Title is required.")
                 else:
                     try:
+                        replace = e_uploaded is not None
+                        img_bytes = img_mime = img_name = None
+                        if replace:
+                            img_bytes = e_uploaded.getvalue()
+                            img_mime = e_uploaded.type
+                            img_name = e_uploaded.name
+
                         update_recipe(
                             recipe_id=rid,
                             title=new_title.strip(),
                             ingredients=new_ing.strip(),
                             instructions=new_instr.strip(),
+                            image_bytes=img_bytes if replace else None,
+                            image_mime=img_mime if replace else None,
+                            image_filename=img_name if replace else None,
+                            keep_existing_image=not replace,
                         )
                         st.toast("Recipe updated.", icon="✏️")
                         _open_view(rid)
