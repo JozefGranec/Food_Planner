@@ -1,38 +1,49 @@
 # food/db.py
-import os
+import sqlite3
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-import sqlite3
+import os
+import streamlit as st
 
-# Check if running online with a DATABASE_URL env variable
-DATABASE_URL = os.getenv("DATABASE_URL")  # e.g., from Streamlit Secrets
+# --------------------------------------
+# --- DATABASE CONFIGURATION ----------
+# --------------------------------------
 
-USE_POSTGRES = DATABASE_URL is not None
+# Try to use Streamlit Secrets for PostgreSQL
+POSTGRES_URL = None
+if "database" in st.secrets:
+    POSTGRES_URL = st.secrets["database"].get("url")
+
+USE_POSTGRES = POSTGRES_URL is not None
 
 if USE_POSTGRES:
     import psycopg2
     import psycopg2.extras
 
-def _connect():
-    """Return a DB connection depending on environment."""
-    if USE_POSTGRES:
-        con = psycopg2.connect(DATABASE_URL)
-        # Dict cursor like sqlite3.Row
-        con.cursor_factory = psycopg2.extras.RealDictCursor
+    def _connect():
+        con = psycopg2.connect(POSTGRES_URL)
         return con
-    else:
-        DB_PATH = Path("./food.sqlite3")
-        con = sqlite3.connect(DB_PATH)
+
+else:
+    # Local SQLite fallback
+    _DB_PATH = Path("./food.sqlite3")
+
+    def _connect():
+        con = sqlite3.connect(_DB_PATH)
         con.row_factory = sqlite3.Row
         return con
 
+# --------------------------------------
+# --- DATABASE INITIALIZATION ----------
+# --------------------------------------
 def init_db() -> None:
-    """Create table if needed."""
+    """Create recipes table if not exists."""
     con = _connect()
     cur = con.cursor()
 
     if USE_POSTGRES:
-        cur.execute("""
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS recipes (
                 id SERIAL PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -42,10 +53,12 @@ def init_db() -> None:
                 image_mime TEXT,
                 image_filename TEXT,
                 serves INTEGER
-            );
-        """)
+            )
+            """
+        )
     else:
-        cur.execute("""
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS recipes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
@@ -55,14 +68,15 @@ def init_db() -> None:
                 image_mime TEXT,
                 image_filename TEXT,
                 serves INTEGER
-            );
-        """)
+            )
+            """
+        )
     con.commit()
     con.close()
 
-
-# ---------- CRUD Operations ----------
-
+# --------------------------------------
+# --- CRUD OPERATIONS ------------------
+# --------------------------------------
 def add_recipe(
     title: str,
     ingredients: str = "",
@@ -72,22 +86,25 @@ def add_recipe(
     image_filename: Optional[str] = None,
     serves: Optional[int] = None,
 ) -> int:
+    """Insert a recipe and return its ID."""
     con = _connect()
     cur = con.cursor()
     if USE_POSTGRES:
         cur.execute(
             """
-            INSERT INTO recipes (title, ingredients, instructions, image_bytes, image_mime, image_filename, serves)
+            INSERT INTO recipes
+                (title, ingredients, instructions, image_bytes, image_mime, image_filename, serves)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (title, ingredients, instructions, image_bytes, image_mime, image_filename, serves)
         )
-        new_id = cur.fetchone()["id"]
+        new_id = cur.fetchone()[0]
     else:
         cur.execute(
             """
-            INSERT INTO recipes (title, ingredients, instructions, image_bytes, image_mime, image_filename, serves)
+            INSERT INTO recipes
+                (title, ingredients, instructions, image_bytes, image_mime, image_filename, serves)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (title, ingredients, instructions, image_bytes, image_mime, image_filename, serves)
@@ -98,13 +115,36 @@ def add_recipe(
     return new_id
 
 
-def list_recipes() -> List[Dict[str, Any]]:
+def list_recipes(limit: int = 200, search: Optional[str] = None) -> List[Dict[str, Any]]:
     con = _connect()
     cur = con.cursor()
-    cur.execute("SELECT id, title, serves FROM recipes ORDER BY LOWER(title) ASC")
+    if search:
+        q = f"%{search.lower()}%"
+        if USE_POSTGRES:
+            cur.execute(
+                "SELECT id, title, serves FROM recipes WHERE LOWER(title) LIKE %s ORDER BY title ASC LIMIT %s",
+                (q, limit)
+            )
+        else:
+            cur.execute(
+                "SELECT id, title, serves FROM recipes WHERE LOWER(title) LIKE ? ORDER BY title ASC LIMIT ?",
+                (q, limit)
+            )
+    else:
+        if USE_POSTGRES:
+            cur.execute("SELECT id, title, serves FROM recipes ORDER BY title ASC LIMIT %s", (limit,))
+        else:
+            cur.execute("SELECT id, title, serves FROM recipes ORDER BY title ASC LIMIT ?", (limit,))
     rows = cur.fetchall()
     con.close()
-    return [dict(row) for row in rows]
+
+    result = []
+    for r in rows:
+        if USE_POSTGRES:
+            result.append(dict(r))
+        else:
+            result.append(dict(r))
+    return result
 
 
 def get_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
@@ -112,11 +152,19 @@ def get_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
     cur = con.cursor()
     if USE_POSTGRES:
         cur.execute(
-            "SELECT * FROM recipes WHERE id = %s", (recipe_id,)
+            """
+            SELECT id, title, ingredients, instructions, image_bytes, image_mime, image_filename, serves
+            FROM recipes WHERE id = %s
+            """,
+            (recipe_id,)
         )
     else:
         cur.execute(
-            "SELECT * FROM recipes WHERE id = ?", (recipe_id,)
+            """
+            SELECT id, title, ingredients, instructions, image_bytes, image_mime, image_filename, serves
+            FROM recipes WHERE id = ?
+            """,
+            (recipe_id,)
         )
     row = cur.fetchone()
     con.close()
@@ -136,9 +184,8 @@ def update_recipe(
 ) -> None:
     con = _connect()
     cur = con.cursor()
-
     sets = []
-    params: List[Any] = []
+    params = []
 
     if title is not None:
         sets.append("title = %s" if USE_POSTGRES else "title = ?")
@@ -152,26 +199,15 @@ def update_recipe(
     if serves is not None:
         sets.append("serves = %s" if USE_POSTGRES else "serves = ?")
         params.append(serves)
-
-    if not keep_existing_image:
-        sets += [
-            "image_bytes = %s" if USE_POSTGRES else "image_bytes = ?",
-            "image_mime = %s" if USE_POSTGRES else "image_mime = ?",
-            "image_filename = %s" if USE_POSTGRES else "image_filename = ?",
-        ]
-        params += [image_bytes, image_mime, image_filename]
-    else:
-        if image_bytes is not None or image_mime is not None or image_filename is not None:
-            sets += [
-                "image_bytes = %s" if USE_POSTGRES else "image_bytes = ?",
-                "image_mime = %s" if USE_POSTGRES else "image_mime = ?",
-                "image_filename = %s" if USE_POSTGRES else "image_filename = ?",
-            ]
-            params += [image_bytes, image_mime, image_filename]
+    if not keep_existing_image or image_bytes is not None:
+        sets.append("image_bytes = %s" if USE_POSTGRES else "image_bytes = ?")
+        sets.append("image_mime = %s" if USE_POSTGRES else "image_mime = ?")
+        sets.append("image_filename = %s" if USE_POSTGRES else "image_filename = ?")
+        params.extend([image_bytes, image_mime, image_filename])
 
     if not sets:
         con.close()
-        return
+        return  # nothing to update
 
     params.append(recipe_id)
     sql = f"UPDATE recipes SET {', '.join(sets)} WHERE id = {'%s' if USE_POSTGRES else '?'}"
@@ -191,7 +227,7 @@ def delete_recipe(recipe_id: int) -> None:
 def count_recipes() -> int:
     con = _connect()
     cur = con.cursor()
-    cur.execute("SELECT COUNT(*) AS c FROM recipes")
-    n = cur.fetchone()["c"]
+    cur.execute("SELECT COUNT(*) AS c")
+    n = cur.fetchone()[0]
     con.close()
     return int(n)
