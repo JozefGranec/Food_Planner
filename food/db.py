@@ -4,36 +4,38 @@ import os
 import sqlite3
 from typing import Any, Dict, List, Optional
 
-# Optional: Postgres driver. If missing, we'll fall back to SQLite unless PG is explicitly requested.
+# Optional Postgres driver (only needed if you use Postgres)
 try:
     import psycopg2  # type: ignore
 except Exception:
     psycopg2 = None  # type: ignore
 
-# In-memory state
+# Simple in-memory state
 _DB: Dict[str, Any] = {"engine": None, "conn": None, "dsn": None, "path": None}
 
 
-# ---------- Public API ----------
+# =========================
+# Public API
+# =========================
 def init_db(*args, **kwargs) -> None:
     """
-    Initialize the database connection.
+    Initialize DB connection.
 
     Priority:
-      1) Explicit Postgres URL/parts passed via kwargs
-      2) Streamlit Secrets: st.secrets["database"] (URL or parts)
-      3) SQLite fallback: food.sqlite3
+      1) Explicit kwargs -> Postgres if URL/parts detected
+      2) Streamlit Secrets -> Postgres (if present)
+      3) SQLite fallback -> food.sqlite3
     """
-    # 1) Explicit kwargs → Postgres if URL/parts present
+    # 1) Explicit kwargs (preferred when pages pass st.secrets)
     db_url = kwargs.get("db_url") or kwargs.get("url")
     if _looks_like_pg(db_url) or _looks_like_pg_parts(kwargs):
         _init_postgres(db_url, kwargs)
         _ensure_schema()
         return
 
-    # 2) Try Streamlit Secrets (safe even when not running under Streamlit)
+    # 2) Streamlit Secrets (safe even outside Streamlit)
     try:
-        import streamlit as st  # local import so importing db.py never depends on Streamlit
+        import streamlit as st  # local import so this file works without Streamlit too
         if "database" in st.secrets:
             db_secrets = dict(st.secrets["database"])
             url = db_secrets.get("url")
@@ -42,12 +44,10 @@ def init_db(*args, **kwargs) -> None:
                 _ensure_schema()
                 return
     except Exception:
-        # Not in Streamlit or no secrets; continue to SQLite
-        pass
+        pass  # no secrets / not running under Streamlit
 
     # 3) SQLite fallback
-    db_path = kwargs.get("db_path") or "food.sqlite3"
-    _init_sqlite(db_path)
+    _init_sqlite(kwargs.get("db_path") or "food.sqlite3")
     _ensure_schema()
 
 
@@ -60,9 +60,9 @@ def add_recipe(
     image_mime: Optional[str] = None,
     image_filename: Optional[str] = None,
     serves: Optional[int] = None,
-    servings: Optional[int] = None,  # compatibility
+    servings: Optional[int] = None,  # compatibility alias
 ) -> int:
-    """Insert a recipe and return the new id."""
+    """Insert a recipe and return its new id."""
     con = _conn()
     cur = con.cursor()
     eng = _engine()
@@ -100,6 +100,7 @@ def add_recipe(
 
 
 def list_recipes() -> List[Dict[str, Any]]:
+    """List recipes for the A–Z view (id + title)."""
     con = _conn()
     cur = con.cursor()
     cur.execute("SELECT id, title FROM recipes ORDER BY title ASC;")
@@ -113,23 +114,28 @@ def list_recipes() -> List[Dict[str, Any]]:
 
 
 def get_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch a full recipe row (dict) or None if not found."""
     con = _conn()
     cur = con.cursor()
     if _engine() == "postgres":
         cur.execute(
             """
-            SELECT id, title, ingredients, instructions, image_bytes, image_mime,
-                   image_filename, serves, created_at, updated_at
-            FROM recipes WHERE id = %s;
+            SELECT id, title, ingredients, instructions,
+                   image_bytes, image_mime, image_filename,
+                   serves, created_at, updated_at
+            FROM recipes
+            WHERE id = %s;
             """,
             (recipe_id,),
         )
     else:
         cur.execute(
             """
-            SELECT id, title, ingredients, instructions, image_bytes, image_mime,
-                   image_filename, serves, created_at, updated_at
-            FROM recipes WHERE id = ?;
+            SELECT id, title, ingredients, instructions,
+                   image_bytes, image_mime, image_filename,
+                   serves, created_at, updated_at
+            FROM recipes
+            WHERE id = ?;
             """,
             (recipe_id,),
         )
@@ -141,6 +147,7 @@ def get_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
     if isinstance(row, sqlite3.Row):
         d = dict(row)
     else:
+        # psycopg2 returns tuples by default
         d = {
             "id": row[0],
             "title": row[1],
@@ -153,6 +160,13 @@ def get_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
             "created_at": row[8],
             "updated_at": row[9],
         }
+
+    # 🔧 IMPORTANT: psycopg2 returns BYTEA as memoryview → convert to bytes for st.image()
+    ib = d.get("image_bytes")
+    if isinstance(ib, memoryview):
+        d["image_bytes"] = ib.tobytes()
+
+    # back-compat alias
     d.setdefault("servings", d.get("serves", 0))
     return d
 
@@ -168,8 +182,9 @@ def update_recipe(
     image_filename: Optional[str] = None,
     keep_existing_image: bool = True,
     serves: Optional[int] = None,
-    servings: Optional[int] = None,  # compatibility
+    servings: Optional[int] = None,  # compatibility alias
 ) -> None:
+    """Update selected fields of a recipe."""
     con = _conn()
     cur = con.cursor()
     eng = _engine()
@@ -194,6 +209,7 @@ def update_recipe(
         sets.append("serves = %s" if eng == "postgres" else "serves = ?")
         params.append(_to_int(t_serves, 0))
 
+    # Image handling
     if keep_existing_image:
         if image_bytes is not None:
             sets.append("image_bytes = %s" if eng == "postgres" else "image_bytes = ?")
@@ -216,6 +232,7 @@ def update_recipe(
             image_filename,
         ]
 
+    # updated_at
     if eng == "postgres":
         sets.append("updated_at = NOW()")
         params.append(recipe_id)
@@ -251,7 +268,9 @@ def count_recipes() -> int:
     return int(row[0]) if row else 0
 
 
-# ---------- Diagnostics (used by DB Status page) ----------
+# =========================
+# Diagnostics (used by DB Status page)
+# =========================
 def get_backend_info() -> dict:
     return {"engine": _engine(), "dsn": _DB.get("dsn"), "path": _DB.get("path")}
 
@@ -275,7 +294,9 @@ def self_test_write_read_delete() -> dict:
         return {"ok": False, "id": None, "error": str(e)}
 
 
-# ---------- Internals ----------
+# =========================
+# Internals
+# =========================
 def _engine() -> str:
     return _DB.get("engine") or "sqlite"
 
@@ -349,12 +370,10 @@ def _build_pg_dsn(url: Optional[str], parts: Dict[str, Any]) -> Optional[str]:
     return dsn
 
 def _init_postgres(url: Optional[str], parts: Dict[str, Any]) -> None:
-    # If PG was requested but driver missing, raise loudly so you don't silently fall back.
     if psycopg2 is None:
         raise RuntimeError("Postgres requested but 'psycopg2-binary' is not installed.")
     dsn = _build_pg_dsn(url, parts)
     if not dsn:
-        # No usable credentials → fallback to SQLite
         _init_sqlite(parts.get("db_path") or "food.sqlite3")
         return
     conn = psycopg2.connect(dsn)
