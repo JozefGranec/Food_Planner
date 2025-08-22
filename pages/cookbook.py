@@ -67,8 +67,8 @@ def render():
         fmt = image.format or "PNG"
         image.save(buf, format=fmt)
         img_bytes = buf.getvalue()
-        mime = getattr(file, "type", None) or ("image/png" if fmt.upper() == "PNG" else f"image/{fmt.lower()}")
-        name = getattr(file, "name", None) or f"image.{fmt.lower()}"
+        mime = getattr(file, "type", None) or ("image/png" if fmt and fmt.upper() == "PNG" else f"image/{(fmt or 'png').lower()}")
+        name = getattr(file, "name", None) or f"image.{(fmt or 'png').lower()}"
         return img_bytes, mime, name
 
     def _pil_preview_200(file) -> Image.Image:
@@ -77,29 +77,27 @@ def render():
         im.thumbnail((200, 200))
         return im
 
-    # --- text-area helper: autosize if supported; otherwise estimate height ---
-    def _text_area_autosize(
-        label: str,
-        *,
-        value: Optional[str] = None,
-        placeholder: Optional[str] = None,
-        key: Optional[str] = None,
-    ):
+    # ---------- servings helper ----------
+    def _extract_servings(rec: Any) -> Optional[int]:
         """
-        Streamlit >= 1.30: use autosize=True so the box grows with content.
-        Older versions: compute a reasonable height based on content length/lines.
+        Try to read 'servings' from the recipe dict using several possible keys.
+        Returns an int if found and > 0, else None.
         """
-        text = value if value is not None else ""
-        try:
-            # Newer Streamlit
-            return st.text_area(label, value=text, placeholder=placeholder, key=key, autosize=True)
-        except TypeError:
-            # Fallback for older Streamlit: estimate height
-            approx_cols = 90  # rough characters per line
-            line_based = (text.count("\n") + 3)
-            width_based = (len(text) // approx_cols) + 3
-            num_lines = max(6, line_based, width_based)
-            return st.text_area(label, value=text, placeholder=placeholder, key=key, height=min(800, num_lines * 24))
+        if not isinstance(rec, dict):
+            return None
+        candidates = [
+            "servings", "serve", "serves", "people", "num_people",
+            "portion", "portions", "servings_count"
+        ]
+        for k in candidates:
+            if k in rec and rec[k] is not None and str(rec[k]).strip() != "":
+                try:
+                    val = int(str(rec[k]).strip())
+                    if val > 0:
+                        return val
+                except Exception:
+                    pass
+        return None
 
     # ---------- ingredients helpers ----------
     def _rows_from_text(ingredients_text: str) -> List[Dict[str, str]]:
@@ -114,7 +112,6 @@ def render():
             return rows
         lines = text.splitlines()
         for line in lines:
-            # Try to split as TSV (3 fields)
             parts = line.split("\t")
             if len(parts) >= 3:
                 name = parts[0].strip()
@@ -123,7 +120,6 @@ def render():
                 if name or amount or unit:
                     rows.append({"name": name, "amount": amount, "unit": unit})
             else:
-                # Fallback: treat the whole line as the name
                 name = line.strip()
                 if name:
                     rows.append({"name": name, "amount": "", "unit": ""})
@@ -167,7 +163,6 @@ def render():
             st.markdown("**Ingredients**")
             st.markdown("\n".join(bullets))
         else:
-            # fall back to raw text block
             txt = (ingredients_text or "").strip()
             if txt:
                 st.markdown("**Ingredients**")
@@ -274,6 +269,11 @@ def render():
             unsafe_allow_html=True,
         )
 
+    # Autosize helper for text_area rows
+    def _auto_rows(current_text: str, base: int = 6, max_rows: int = 24) -> int:
+        lines = max(1, (current_text or "").count("\n") + 1)
+        return max(base, min(lines + 1, max_rows))
+
     # ---------- session ----------
     ss = st.session_state
     if "cb_mode" not in ss:
@@ -292,6 +292,8 @@ def render():
         ss.cb_confirm_delete_id = None
         # reset ingredients editor state
         st.session_state.pop("add_ing_rows", None)
+        # reset add instructions state
+        st.session_state.pop("add_instructions", None)
 
     def _back_to_list():
         ss.cb_mode = "list"
@@ -309,6 +311,7 @@ def render():
         ss.cb_confirm_delete_id = None
         # reset editor; will initialize from recipe on render
         st.session_state.pop("edit_ing_rows", None)
+        st.session_state.pop("edit_instructions", None)
 
     # ---------- header ----------
     st.header("Cook Book", divider="gray")
@@ -326,17 +329,19 @@ def render():
         # Title
         title = st.text_input("Title *", placeholder="e.g., Chicken Wings")
 
-        # Mandatory servings (dropdown 1..20)
-        servings_options = list(range(1, 21))
-        servings = st.selectbox(
+        # Servings (required)
+        servings_options = list(range(1, 21))  # 1..20
+        servings_idx_default = 1  # default to "2"
+        sev = st.selectbox(
             "For how many people is this recipe served? *",
             servings_options,
-            index=1,  # default to 2
-            help="This will be used later for shopping list calculations.",
-            key="add_servings_select",
+            index=servings_idx_default,
+            help="This is used for later shopping list calculations.",
+            key="add_servings",
         )
+        servings_val = int(sev) if sev else None
 
-        # Image
+        # Image (with preview)
         uploaded_img = st.file_uploader(
             "Recipe image (optional)",
             type=["png", "jpg", "jpeg", "webp"],
@@ -352,21 +357,34 @@ def render():
         # Ingredients table editor
         add_rows = _ingredients_table_editor("add_ing")
 
-        # AUTOSIZE instructions
-        instructions = _text_area_autosize("Instructions", placeholder="Steps…")
+        # Instructions (auto-sized)
+        current_add_instr = st.session_state.get("add_instructions", "")
+        add_instr_rows = _auto_rows(current_add_instr)
+        instructions = st.text_area(
+            "Instructions",
+            value=current_add_instr,
+            key="add_instructions",
+            placeholder="Steps…",
+            help="This box grows with your text for easier reading.",
+            height=None,
+            max_chars=None,
+            label_visibility="visible",
+            disabled=False,
+        )
+
+        # Adjust height by re-rendering a small CSS hack (Streamlit doesn't dynamically resize by default)
+        st.markdown(
+            f"<style>.stTextArea textarea{{min-height:{add_instr_rows * 24}px;}}</style>",
+            unsafe_allow_html=True,
+        )
 
         c1, c2 = st.columns([1, 1])
         with c1:
             if st.button("Save", use_container_width=True, key="add_save_btn"):
-                errors = []
                 if not title.strip():
-                    errors.append("Title is required.")
-                if not isinstance(servings, int) or servings < 1:
-                    errors.append("Please select how many people this recipe serves.")
-
-                if errors:
-                    for e in errors:
-                        st.error(e)
+                    st.error("Title is required.")
+                elif not servings_val:
+                    st.error("Please select how many people this recipe serves.")
                 else:
                     try:
                         img_bytes = img_mime = img_name = None
@@ -375,7 +393,7 @@ def render():
 
                         ingredients_text = _text_from_rows(add_rows)
 
-                        # Prefer saving servings if DB supports it
+                        # Try to store servings if DB supports it
                         try:
                             add_recipe(
                                 title=title.strip(),
@@ -384,10 +402,10 @@ def render():
                                 image_bytes=img_bytes,
                                 image_mime=img_mime,
                                 image_filename=img_name,
-                                servings=servings,  # NEW
+                                servings=int(servings_val),
                             )
                         except TypeError:
-                            # Backwards compatibility if DB doesn't yet support 'servings'
+                            # Fallback: call without servings if the DB API doesn't accept it
                             add_recipe(
                                 title=title.strip(),
                                 ingredients=ingredients_text,
@@ -396,7 +414,6 @@ def render():
                                 image_mime=img_mime,
                                 image_filename=img_name,
                             )
-                            st.info("Note: your database doesn't yet store 'servings'. Consider adding a 'servings' column to use this later in shopping lists.")
 
                         st.toast(f"Recipe “{title.strip()}” added.", icon="✅")
                         _back_to_list()
@@ -430,31 +447,28 @@ def render():
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
         ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
-        rserv = None
-        if isinstance(recipe, dict):
-            # support both 'servings' and legacy 'serve' keys just in case
-            rserv = recipe.get("servings", recipe.get("serve"))
+        rserv = _extract_servings(recipe)
 
-        # Title
+        # Title only: bold + larger font
         safe_title = html.escape(rtitle)
         st.markdown(
             f"""
-            <div style="font-weight: 800; font-size: 1.8rem; line-height: 1.2; margin-bottom: 0.4rem;">
+            <div style="font-weight: 800; font-size: 1.8rem; line-height: 1.2; margin-bottom: 1rem;">
               {safe_title}
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # Servings (if present)
-        if rserv:
-            st.markdown(f"**Serves:** {int(rserv)}")
-
         # Image
         if rimg:
             st.image(rimg, caption=None)
         else:
             st.caption("No image uploaded.")
+
+        # Servings sentence directly UNDER the image
+        if rserv is not None:
+            st.markdown(f"**Serves for {rserv} {'people' if rserv != 1 else 'person'}.**")
 
         # Ingredients as bullet list
         _render_ingredients_preview(ringing)
@@ -518,9 +532,7 @@ def render():
         orig_ing_text = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
-        rserv = None
-        if isinstance(recipe, dict):
-            rserv = recipe.get("servings", recipe.get("serve"))
+        rserv = _extract_servings(recipe) or 2  # default selection if missing
 
         st.subheader(f"Edit: {rtitle or 'Untitled'}")
 
@@ -528,21 +540,22 @@ def render():
         if "edit_ing_rows" not in st.session_state:
             st.session_state["edit_ing_rows"] = _rows_from_text(orig_ing_text) or [{"name": "", "amount": "", "unit": ""}]
 
+        # Title
         new_title = st.text_input("Title *", value=rtitle or "")
 
-        # Servings selector (default 2 if missing)
+        # Servings (required)
         servings_options = list(range(1, 21))
-        try:
-            default_idx = servings_options.index(int(rserv)) if rserv else 1
-        except Exception:
-            default_idx = 1
+        # if rserv not in 1..20, clamp to 2
+        start_idx = servings_options.index(rserv) if rserv in servings_options else 1
         new_servings = st.selectbox(
             "For how many people is this recipe served? *",
             servings_options,
-            index=default_idx,
-            key="edit_servings_select",
+            index=start_idx,
+            help="This is used for later shopping list calculations.",
+            key="edit_servings",
         )
 
+        # Image uploader
         e_uploaded = st.file_uploader(
             "Change or add image (optional)",
             type=["png", "jpg", "jpeg", "webp"],
@@ -562,14 +575,28 @@ def render():
         # Ingredients table editor
         edit_rows = _ingredients_table_editor("edit_ing")
 
-        # AUTOSIZE instructions
-        new_instr = _text_area_autosize("Instructions", value=rinstr)
+        # Instructions (auto-sized)
+        current_edit_instr = st.session_state.get("edit_instructions", rinstr or "")
+        edit_instr_rows = _auto_rows(current_edit_instr)
+        new_instr = st.text_area(
+            "Instructions",
+            value=current_edit_instr,
+            key="edit_instructions",
+            height=None,
+            help="This box grows with your text for easier reading.",
+        )
+        st.markdown(
+            f"<style>.stTextArea textarea{{min-height:{edit_instr_rows * 24}px;}}</style>",
+            unsafe_allow_html=True,
+        )
 
         c1, c2 = st.columns([1, 1])
         with c1:
             if st.button("Save changes", use_container_width=True, key="edit_save_btn"):
                 if not new_title.strip():
                     st.error("Title is required.")
+                elif not new_servings:
+                    st.error("Please select how many people this recipe serves.")
                 else:
                     try:
                         replace = e_uploaded is not None
@@ -579,7 +606,7 @@ def render():
 
                         ingredients_text = _text_from_rows(edit_rows)
 
-                        # Prefer updating servings if DB supports it
+                        # Try to update with servings; fallback without if API doesn't support it
                         try:
                             update_recipe(
                                 recipe_id=rid,
@@ -590,7 +617,7 @@ def render():
                                 image_mime=img_mime if replace else None,
                                 image_filename=img_name if replace else None,
                                 keep_existing_image=not replace,
-                                servings=int(new_servings),  # NEW
+                                servings=int(new_servings),
                             )
                         except TypeError:
                             update_recipe(
@@ -603,7 +630,6 @@ def render():
                                 image_filename=img_name if replace else None,
                                 keep_existing_image=not replace,
                             )
-                            st.info("Note: your database doesn't yet store 'servings'. Consider adding a 'servings' column to use this later in shopping lists.")
 
                         st.toast("Recipe updated.", icon="✏️")
                         ss.cb_mode = "view"
