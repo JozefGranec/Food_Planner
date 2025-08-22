@@ -3,7 +3,7 @@
 import io
 import html  # for safely escaping text inside HTML
 import string
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -19,8 +19,95 @@ from food.db import (
     count_recipes,
 )
 
+
 def render():
-    init_db()
+    # ---------------- DB backend selection (Postgres via Secrets or local SQLite) ----------------
+    def _init_backend():
+        """
+        Tries to initialize DB with Streamlit Secrets (Postgres) first.
+        Falls back to local SQLite file 'food.sqlite3'.
+        Works with old/new init_db signatures:
+          - init_db()
+          - init_db(db_url="postgresql+psycopg2://...") or init_db(db_path="food.sqlite3")
+          - init_db(**kwargs) where kwargs describe connection parts
+        """
+        # 1) Try Streamlit secrets → Postgres
+        db_secrets: Optional[dict] = None
+        try:
+            if "database" in st.secrets:
+                db_secrets = dict(st.secrets["database"])
+        except Exception:
+            db_secrets = None
+
+        # Helper: build a URL if only parts are provided
+        def _build_pg_url(parts: dict) -> Optional[str]:
+            # Accept either "url" directly or components
+            if "url" in parts and parts["url"]:
+                return str(parts["url"])
+            user = parts.get("user") or parts.get("username")
+            pwd = parts.get("password")
+            host = parts.get("host", "localhost")
+            port = parts.get("port", 5432)
+            dbname = parts.get("dbname") or parts.get("database")
+            sslmode = parts.get("sslmode")  # optional
+            if not (user and pwd and dbname):
+                return None
+            # Prefer SQLAlchemy scheme if your db layer supports it; still safe to pass to many libs
+            base = f"postgresql+psycopg2://{user}:{pwd}@{host}:{port}/{dbname}"
+            if sslmode:
+                base += f"?sslmode={sslmode}"
+            return base
+
+        # Try Postgres first
+        if db_secrets:
+            pg_url = _build_pg_url(db_secrets)
+            if pg_url:
+                try:
+                    # Preferred: URL-style
+                    init_db(db_url=pg_url)
+                    return
+                except TypeError:
+                    # Maybe it expects generic "url"
+                    try:
+                        init_db(url=pg_url)
+                        return
+                    except TypeError:
+                        # Maybe it expects separate parts
+                        try:
+                            init_db(**db_secrets)
+                            return
+                        except TypeError:
+                            pass
+                except Exception:
+                    # If URL attempt failed for other reasons, try parts next
+                    try:
+                        init_db(**db_secrets)
+                        return
+                    except Exception:
+                        pass
+            else:
+                # No URL; try passing parts directly
+                try:
+                    init_db(**db_secrets)
+                    return
+                except TypeError:
+                    pass
+                except Exception:
+                    pass
+
+        # 2) Fallback → local SQLite file in project folder
+        try:
+            init_db(db_path="food.sqlite3")  # preferred explicit argument
+            return
+        except TypeError:
+            pass
+        except Exception:
+            pass
+
+        # 3) Last resort → legacy no-arg init
+        init_db()
+
+    _init_backend()
 
     # ---------- utilities ----------
     def _normalize_title(r: Any) -> str:
@@ -92,7 +179,6 @@ def render():
         img = Image.new("RGB", (W, H), color=bg)
         draw = ImageDraw.Draw(img)
 
-        # Try to use a TTF font; fall back to default
         def get_font(sz: int):
             for fam in ("DejaVuSans.ttf", "arial.ttf"):
                 try:
@@ -101,18 +187,15 @@ def render():
                     continue
             return ImageFont.load_default()
 
-        # Dynamically fit text
         max_w, max_h = W - 2 * margin, H - 2 * margin
         font_size = 120
         font = get_font(font_size)
 
-        # helpers for bbox
         def measure(f):
             if hasattr(draw, "multiline_textbbox") and isinstance(f, ImageFont.FreeTypeFont):
                 b = draw.multiline_textbbox((0, 0), text, font=f, spacing=6, align="center")
                 return b[2] - b[0], b[3] - b[1]
             else:
-                # fallback
                 return draw.multiline_textsize(text, font=f, spacing=6)
 
         w, h = measure(font)
@@ -163,10 +246,7 @@ def render():
         return "\n".join(out_lines)
 
     def _render_ingredients_preview(ingredients_text: str):
-        """
-        Render ingredients as a clean bullet list in preview mode.
-        Uses parsed rows; falls back to raw text if nothing parses.
-        """
+        """Render ingredients as bullet list in preview; fall back to raw text."""
         rows = _rows_from_text(ingredients_text)
         if rows:
             st.markdown("**Ingredients**")
@@ -391,23 +471,35 @@ def render():
 
                         ingredients_text = _text_from_rows(add_rows)
 
-                        # Expect add_recipe to return new id; fall back to list if not
-                        new_id = add_recipe(
-                            title=title.strip(),
-                            ingredients=ingredients_text,
-                            instructions=instructions.strip(),
-                            image_bytes=img_bytes,
-                            image_mime=img_mime,
-                            image_filename=img_name,
-                            serves=int(serves),
-                        )
+                        # Try with 'serves', fall back to 'servings' for backward compatibility
+                        new_id = None
+                        try:
+                            new_id = add_recipe(
+                                title=title.strip(),
+                                ingredients=ingredients_text,
+                                instructions=instructions.strip(),
+                                image_bytes=img_bytes,
+                                image_mime=img_mime,
+                                image_filename=img_name,
+                                serves=int(serves),
+                            )
+                        except TypeError:
+                            new_id = add_recipe(
+                                title=title.strip(),
+                                ingredients=ingredients_text,
+                                instructions=instructions.strip(),
+                                image_bytes=img_bytes,
+                                image_mime=img_mime,
+                                image_filename=img_name,
+                                servings=int(serves),
+                            )
+
                         st.toast(f"Recipe “{title.strip()}” added.", icon="✅")
 
                         if isinstance(new_id, int):
                             ss.cb_selected_id = new_id
                             ss.cb_mode = "view"
                         else:
-                            # best effort: jump to list
                             ss.cb_mode = "list"
                         st.rerun()
                     except Exception as e:
@@ -441,8 +533,14 @@ def render():
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
         serves_val = 0
         if isinstance(recipe, dict):
-            # supports serves / people / persons keys for compatibility
-            serves_val = int(recipe.get("serves") or recipe.get("people") or recipe.get("persons") or 0)
+            # supports serves / servings / people / persons keys for compatibility
+            serves_val = int(
+                recipe.get("serves")
+                or recipe.get("servings")
+                or recipe.get("people")
+                or recipe.get("persons")
+                or 0
+            )
 
         # Title (big, bold)
         safe_title = html.escape(rtitle)
@@ -462,10 +560,11 @@ def render():
             placeholder = _make_no_preview_placeholder(200)
             st.image(placeholder, caption=None)
 
-        # Serves sentence placed under the image
+        # Serves sentence
         if serves_val and serves_val > 0:
             plural = "people" if serves_val != 1 else "person"
-            st.caption(f"Serves for {serves_val} {plural}.")
+            # Use markdown to render in regular (black) text instead of caption gray
+            st.markdown(f"**Serves for {serves_val} {plural}.**")
 
         # Ingredients & Instructions
         _render_ingredients_preview(ringing)
@@ -529,7 +628,13 @@ def render():
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
         serves_existing = 0
         if isinstance(recipe, dict):
-            serves_existing = int(recipe.get("serves") or recipe.get("people") or recipe.get("persons") or 0)
+            serves_existing = int(
+                recipe.get("serves")
+                or recipe.get("servings")
+                or recipe.get("people")
+                or recipe.get("persons")
+                or 0
+            )
 
         st.subheader(f"Edit: {rtitle or 'Untitled'}")
 
@@ -601,17 +706,32 @@ def render():
 
                         ingredients_text = _text_from_rows(edit_rows)
 
-                        update_recipe(
-                            recipe_id=rid,
-                            title=new_title.strip(),
-                            ingredients=ingredients_text,
-                            instructions=new_instr.strip(),
-                            image_bytes=img_bytes if replace else None,
-                            image_mime=img_mime if replace else None,
-                            image_filename=img_name if replace else None,
-                            keep_existing_image=not replace,
-                            serves=int(new_serves),
-                        )
+                        # Try with 'serves', fall back to 'servings'
+                        try:
+                            update_recipe(
+                                recipe_id=rid,
+                                title=new_title.strip(),
+                                ingredients=ingredients_text,
+                                instructions=new_instr.strip(),
+                                image_bytes=img_bytes if replace else None,
+                                image_mime=img_mime if replace else None,
+                                image_filename=img_name if replace else None,
+                                keep_existing_image=not replace,
+                                serves=int(new_serves),
+                            )
+                        except TypeError:
+                            update_recipe(
+                                recipe_id=rid,
+                                title=new_title.strip(),
+                                ingredients=ingredients_text,
+                                instructions=new_instr.strip(),
+                                image_bytes=img_bytes if replace else None,
+                                image_mime=img_mime if replace else None,
+                                image_filename=img_name if replace else None,
+                                keep_existing_image=not replace,
+                                servings=int(new_serves),
+                            )
+
                         st.toast("Recipe updated.", icon="✏️")
                         ss.cb_mode = "view"
                         st.session_state.pop("edit_ing_rows", None)
