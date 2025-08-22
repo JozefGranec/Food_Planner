@@ -1,4 +1,5 @@
-# changes
+#test
+
 # pages/cookbook.py
 import io
 import html  # for safely escaping text inside HTML
@@ -372,8 +373,6 @@ def render():
             label_visibility="visible",
             disabled=False,
         )
-
-        # Adjust height by re-rendering a small CSS hack (Streamlit doesn't dynamically resize by default)
         st.markdown(
             f"<style>.stTextArea textarea{{min-height:{add_instr_rows * 24}px;}}</style>",
             unsafe_allow_html=True,
@@ -467,7 +466,7 @@ def render():
         else:
             st.caption("No image uploaded.")
 
-        # Servings sentence directly UNDER the image
+        # Servings sentence directly UNDER the image (always check and show if available)
         if rserv is not None:
             st.markdown(f"**Serves for {rserv} {'people' if rserv != 1 else 'person'}.**")
 
@@ -546,7 +545,6 @@ def render():
 
         # Servings (required)
         servings_options = list(range(1, 21))
-        # if rserv not in 1..20, clamp to 2
         start_idx = servings_options.index(rserv) if rserv in servings_options else 1
         new_servings = st.selectbox(
             "For how many people is this recipe served? *",
@@ -733,7 +731,7 @@ def render():
                 f"""
                 <script>
                   const doc = window.parent.document;
-                  const el = doc.getElementById('sec-{first_letter}');
+                  const el = document.getElementById('sec-{first_letter}');
                   if (el) {{
                     el.scrollIntoView({{behavior: 'instant', block: 'start'}});
                   }}
