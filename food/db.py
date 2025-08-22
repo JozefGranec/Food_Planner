@@ -1,91 +1,42 @@
 # food/db.py
-"""
-DB helpers for Food Planner.
-- Uses DATABASE_URL if present (Postgres on Neon/Supabase/Railway).
-- Falls back to SQLite locally.
-- Supports optional recipe images stored as BLOB/BYTEA.
-"""
-
-from __future__ import annotations
-import os
+#T
+import sqlite3
 from pathlib import Path
-from typing import Optional, Any, List, Dict
+from typing import Optional, List, Dict, Any, Tuple
 
-from sqlalchemy import (
-    create_engine, MetaData, Table, Column, Integer, Text, String, LargeBinary,
-    select, func, insert, update, delete, text, inspect
-)
-from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
+_DB_PATH = Path("./food.sqlite3")
 
-# Try to read secrets from Streamlit if available
-def _get_database_url() -> Optional[str]:
-    # 1) Streamlit secrets
-    try:
-        import streamlit as st  # type: ignore
-        if "DATABASE_URL" in st.secrets:
-            return st.secrets["DATABASE_URL"]
-    except Exception:
-        pass
-    # 2) Environment
-    return os.getenv("DATABASE_URL")
-
-# Fallback SQLite (local dev)
-LOCAL_SQLITE = Path.home() / ".food_planner" / "recipes.db"
-LOCAL_SQLITE.parent.mkdir(parents=True, exist_ok=True)
-
-DATABASE_URL = _get_database_url() or f"sqlite:///{LOCAL_SQLITE}"
-
-# For serverless/short-lived environments, avoid persistent connection pooling
-_engine: Engine = create_engine(DATABASE_URL, poolclass=NullPool, future=True)
-
-metadata = MetaData()
-
-recipes = Table(
-    "recipes",
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("title", String(500), nullable=False),
-    Column("ingredients", Text, nullable=True),
-    Column("instructions", Text, nullable=True),
-    # New image fields (created on fresh DBs; added via migration if existing)
-    Column("image_bytes", LargeBinary, nullable=True),
-    Column("image_mime", String(255), nullable=True),
-    Column("image_filename", String(500), nullable=True),
-)
-
-def _ensure_image_columns() -> None:
-    """Lightweight in-place migration: add image columns if they are missing."""
-    insp = inspect(_engine)
-    if not insp.has_table("recipes"):
-        return
-    cols = {c["name"] for c in insp.get_columns("recipes")}
-    if {"image_bytes", "image_mime", "image_filename"} <= cols:
-        return
-
-    dialect = _engine.dialect.name  # 'sqlite', 'postgresql', etc.
-    with _engine.begin() as conn:
-        if "image_bytes" not in cols:
-            if dialect == "postgresql":
-                conn.execute(text("ALTER TABLE recipes ADD COLUMN image_bytes BYTEA"))
-            else:
-                # sqlite / others
-                conn.execute(text("ALTER TABLE recipes ADD COLUMN image_bytes BLOB"))
-        if "image_mime" not in cols:
-            if dialect == "postgresql":
-                conn.execute(text("ALTER TABLE recipes ADD COLUMN image_mime TEXT"))
-            else:
-                conn.execute(text("ALTER TABLE recipes ADD COLUMN image_mime TEXT"))
-        if "image_filename" not in cols:
-            if dialect == "postgresql":
-                conn.execute(text("ALTER TABLE recipes ADD COLUMN image_filename TEXT"))
-            else:
-                conn.execute(text("ALTER TABLE recipes ADD COLUMN image_filename TEXT"))
+def _connect() -> sqlite3.Connection:
+    con = sqlite3.connect(_DB_PATH)
+    con.row_factory = sqlite3.Row
+    return con
 
 def init_db() -> None:
-    """Create tables if they don't exist and ensure new columns exist."""
-    metadata.create_all(_engine)  # creates full schema on new DBs
-    _ensure_image_columns()       # adds missing columns on existing DBs
+    """Create table if needed and ensure 'serves' column exists."""
+    con = _connect()
+    cur = con.cursor()
+    # Create table (without worrying if it already exists)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recipes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            ingredients TEXT,
+            instructions TEXT,
+            image_bytes BLOB,
+            image_mime TEXT,
+            image_filename TEXT
+            -- 'serves' may not exist yet in older DBs; we add it below if missing
+        )
+        """
+    )
+    # Ensure 'serves' column exists (SQLite has no easy IF NOT EXISTS for columns)
+    cur.execute("PRAGMA table_info(recipes)")
+    cols = [row["name"] for row in cur.fetchall()]
+    if "serves" not in cols:
+        cur.execute("ALTER TABLE recipes ADD COLUMN serves INTEGER")
+    con.commit()
+    con.close()
 
 def add_recipe(
     title: str,
@@ -94,57 +45,51 @@ def add_recipe(
     image_bytes: Optional[bytes] = None,
     image_mime: Optional[str] = None,
     image_filename: Optional[str] = None,
+    serves: Optional[int] = None,
 ) -> int:
-    if not title or not title.strip():
-        raise ValueError("title is required")
-    with _engine.begin() as conn:
-        res = conn.execute(
-            insert(recipes).values(
-                title=title.strip(),
-                ingredients=ingredients.strip(),
-                instructions=instructions.strip(),
-                image_bytes=image_bytes,
-                image_mime=(image_mime or None),
-                image_filename=(image_filename or None),
-            )
-        )
-        inserted_id = res.inserted_primary_key[0] if res.inserted_primary_key else None
-        if inserted_id is None:
-            row = conn.execute(select(func.max(recipes.c.id))).scalar_one()
-            return int(row)
-        return int(inserted_id)
+    """Insert a recipe and return its new id."""
+    con = _connect()
+    cur = con.cursor()
+    cur.execute(
+        """
+        INSERT INTO recipes
+            (title, ingredients, instructions, image_bytes, image_mime, image_filename, serves)
+        VALUES
+            (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (title, ingredients, instructions, image_bytes, image_mime, image_filename, serves),
+    )
+    new_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return new_id
 
-def list_recipes(search: Optional[str] = None) -> List[Dict[str, Any]]:
-    with _engine.begin() as conn:
-        if search and search.strip():
-            s = (
-                select(
-                    recipes.c.id,
-                    recipes.c.title,
-                    # lightweight "has_image" flag if you ever need it in UI
-                    (recipes.c.image_bytes.isnot(None)).label("has_image")
-                )
-                .where(func.lower(recipes.c.title).like(f"%{search.strip().lower()}%"))
-                .order_by(func.lower(recipes.c.title))
-            )
-        else:
-            s = (
-                select(
-                    recipes.c.id,
-                    recipes.c.title,
-                    (recipes.c.image_bytes.isnot(None)).label("has_image")
-                )
-                .order_by(func.lower(recipes.c.title))
-            )
-        rows = conn.execute(s).mappings().all()
-        return [dict(r) for r in rows]
+def list_recipes() -> List[Dict[str, Any]]:
+    con = _connect()
+    cur = con.cursor()
+    cur.execute(
+        "SELECT id, title, serves FROM recipes ORDER BY LOWER(title) ASC"
+    )
+    rows = cur.fetchall()
+    con.close()
+    return [dict(row) for row in rows]
 
 def get_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
-    with _engine.begin() as conn:
-        row = conn.execute(
-            select(recipes).where(recipes.c.id == recipe_id)
-        ).mappings().first()
-        return dict(row) if row else None
+    con = _connect()
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT
+            id, title, ingredients, instructions,
+            image_bytes, image_mime, image_filename, serves
+        FROM recipes
+        WHERE id = ?
+        """,
+        (recipe_id,),
+    )
+    row = cur.fetchone()
+    con.close()
+    return dict(row) if row else None
 
 def update_recipe(
     recipe_id: int,
@@ -155,30 +100,68 @@ def update_recipe(
     image_mime: Optional[str] = None,
     image_filename: Optional[str] = None,
     keep_existing_image: bool = True,
+    serves: Optional[int] = None,
 ) -> None:
-    values: Dict[str, Any] = {}
+    """
+    Update fields that are not None. If keep_existing_image is True and
+    no new image is provided, image fields are left untouched.
+    """
+    con = _connect()
+    cur = con.cursor()
+
+    sets = []
+    params: List[Any] = []
+
     if title is not None:
-        values["title"] = title.strip()
+        sets.append("title = ?")
+        params.append(title)
+
     if ingredients is not None:
-        values["ingredients"] = ingredients.strip()
+        sets.append("ingredients = ?")
+        params.append(ingredients)
+
     if instructions is not None:
-        values["instructions"] = instructions.strip()
+        sets.append("instructions = ?")
+        params.append(instructions)
 
-    # Replace image only if caller provided new bytes and does NOT want to keep old
-    if not keep_existing_image and image_bytes is not None:
-        values["image_bytes"] = image_bytes
-        values["image_mime"] = image_mime or None
-        values["image_filename"] = image_filename or None
+    if serves is not None:
+        sets.append("serves = ?")
+        params.append(serves)
 
-    if not values:
-        return
-    with _engine.begin() as conn:
-        conn.execute(update(recipes).where(recipes.c.id == recipe_id).values(**values))
+    if not keep_existing_image:
+        # We are replacing or clearing the image
+        sets.append("image_bytes = ?")
+        sets.append("image_mime = ?")
+        sets.append("image_filename = ?")
+        params.extend([image_bytes, image_mime, image_filename])
+    else:
+        # keep_existing_image=True: only update image if new bytes provided
+        if image_bytes is not None or image_mime is not None or image_filename is not None:
+            sets.append("image_bytes = ?")
+            sets.append("image_mime = ?")
+            sets.append("image_filename = ?")
+            params.extend([image_bytes, image_mime, image_filename])
+
+    if not sets:
+        con.close()
+        return  # nothing to update
+
+    params.append(recipe_id)
+    cur.execute(f"UPDATE recipes SET {', '.join(sets)} WHERE id = ?", params)
+    con.commit()
+    con.close()
 
 def delete_recipe(recipe_id: int) -> None:
-    with _engine.begin() as conn:
-        conn.execute(delete(recipes).where(recipes.c.id == recipe_id))
+    con = _connect()
+    cur = con.cursor()
+    cur.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
+    con.commit()
+    con.close()
 
 def count_recipes() -> int:
-    with _engine.begin() as conn:
-        return int(conn.execute(select(func.count()).select_from(recipes)).scalar_one())
+    con = _connect()
+    cur = con.cursor()
+    cur.execute("SELECT COUNT(*) AS c FROM recipes")
+    n = cur.fetchone()["c"]
+    con.close()
+    return int(n)
