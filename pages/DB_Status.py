@@ -1,33 +1,32 @@
-
-# pages/DB Status.py
+# pages/DB_Status.py
 import streamlit as st
-from food.db import init_db, get_backend_info, ping, count_recipes, self_test_write_read_delete
+from food.db import (
+    init_db,
+    get_backend_info,
+    ping,
+    count_recipes,
+    self_test_write_read_delete,
+)
 
 st.set_page_config(page_title="Database Status", page_icon="🩺", layout="centered")
 st.title("🩺 Database Status")
 
-# Initialize using the same logic as cookbook (Secrets first, else SQLite)
-# If you used the auto-detect logic directly in cookbook.render(), you can call init_db() with no args here too.
-try:
-    init_db()  # cookbook already sets things up; this is safe/ idempotent
-except TypeError:
-    # If your cookbook passes kwargs (db_url/db_path), you can mirror that here if needed.
-    init_db()
+# Initialize (safe to call; your db layer handles PG vs SQLite)
+init_db()
 
 info = get_backend_info()
 engine = info.get("engine")
 dsn = info.get("dsn")
 path = info.get("path")
 
-def _mask_dsn(d):
+def mask_dsn(d: str | None) -> str | None:
     if not d or "://" not in d:
         return d
-    # mask password: scheme://user:****@host:port/db?...
     try:
         scheme, rest = d.split("://", 1)
-        if "@" in rest and ":" in rest.split("@")[0]:
-            user, tail = rest.split("@", 1)[0], rest.split("@", 1)[1]
-            user_name = user.split(":")[0]
+        if "@" in rest and ":" in rest.split("@", 1)[0]:
+            user_part, tail = rest.split("@", 1)
+            user_name = user_part.split(":", 1)[0]
             return f"{scheme}://{user_name}:****@{tail}"
         return d
     except Exception:
@@ -39,7 +38,7 @@ with col1:
     st.metric("Engine", engine or "unknown")
 with col2:
     if engine == "postgres":
-        st.code(_mask_dsn(dsn), language="text")
+        st.code(mask_dsn(dsn) or "(no DSN)", language="text")
     elif engine == "sqlite":
         st.code(path or "(in-memory?)", language="text")
     else:
@@ -63,12 +62,13 @@ if st.button("Run write/read/delete self-test"):
         st.error(f"Self-test failed: {res['error']}")
 
 st.divider()
-st.subheader("Tips if you see SQLite on Streamlit Cloud")
+st.subheader("How to use Postgres on Streamlit Cloud")
 st.markdown(
-    """
-- **You’re on SQLite:** The Streamlit Cloud filesystem is *ephemeral*. Your data will reset on restart/deploy.
-- **Use Postgres via Secrets:** In **Settings → Secrets**, add something like:
-
-```toml
-[database]
-url = "postgresql://USER:PASSWORD@HOST:5432/DBNAME?sslmode=require"
+    "- Add these packages to requirements.txt: `streamlit`, `pillow`, `psycopg2-binary`.\n"
+    "- In Settings → Secrets, add a [database] section with a Postgres URL.\n"
+)
+st.code(
+    '[database]\n'
+    'url = "postgresql://USER:PASSWORD@HOST:5432/DBNAME?sslmode=require"\n',
+    language="toml",
+)
