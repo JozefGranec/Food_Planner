@@ -3,11 +3,17 @@
 import io
 import html  # for safely escaping text inside HTML
 import string
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple
 
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image, ImageDraw, ImageFont  # image helpers
+
+# Pillow import with helpful error if missing on Cloud
+try:
+    from PIL import Image, ImageDraw, ImageFont  # image helpers
+except Exception as e:
+    st.error("Pillow (PIL) failed to import. Ensure 'pillow' is listed in requirements.txt.")
+    raise
 
 from food.db import (
     init_db,
@@ -19,95 +25,15 @@ from food.db import (
     count_recipes,
 )
 
-
 def render():
-    # ---------------- DB backend selection (Postgres via Secrets or local SQLite) ----------------
-    def _init_backend():
-        """
-        Tries to initialize DB with Streamlit Secrets (Postgres) first.
-        Falls back to local SQLite file 'food.sqlite3'.
-        Works with old/new init_db signatures:
-          - init_db()
-          - init_db(db_url="postgresql+psycopg2://...") or init_db(db_path="food.sqlite3")
-          - init_db(**kwargs) where kwargs describe connection parts
-        """
-        # 1) Try Streamlit secrets → Postgres
-        db_secrets: Optional[dict] = None
-        try:
-            if "database" in st.secrets:
-                db_secrets = dict(st.secrets["database"])
-        except Exception:
-            db_secrets = None
-
-        # Helper: build a URL if only parts are provided
-        def _build_pg_url(parts: dict) -> Optional[str]:
-            # Accept either "url" directly or components
-            if "url" in parts and parts["url"]:
-                return str(parts["url"])
-            user = parts.get("user") or parts.get("username")
-            pwd = parts.get("password")
-            host = parts.get("host", "localhost")
-            port = parts.get("port", 5432)
-            dbname = parts.get("dbname") or parts.get("database")
-            sslmode = parts.get("sslmode")  # optional
-            if not (user and pwd and dbname):
-                return None
-            # Prefer SQLAlchemy scheme if your db layer supports it; still safe to pass to many libs
-            base = f"postgresql+psycopg2://{user}:{pwd}@{host}:{port}/{dbname}"
-            if sslmode:
-                base += f"?sslmode={sslmode}"
-            return base
-
-        # Try Postgres first
-        if db_secrets:
-            pg_url = _build_pg_url(db_secrets)
-            if pg_url:
-                try:
-                    # Preferred: URL-style
-                    init_db(db_url=pg_url)
-                    return
-                except TypeError:
-                    # Maybe it expects generic "url"
-                    try:
-                        init_db(url=pg_url)
-                        return
-                    except TypeError:
-                        # Maybe it expects separate parts
-                        try:
-                            init_db(**db_secrets)
-                            return
-                        except TypeError:
-                            pass
-                except Exception:
-                    # If URL attempt failed for other reasons, try parts next
-                    try:
-                        init_db(**db_secrets)
-                        return
-                    except Exception:
-                        pass
-            else:
-                # No URL; try passing parts directly
-                try:
-                    init_db(**db_secrets)
-                    return
-                except TypeError:
-                    pass
-                except Exception:
-                    pass
-
-        # 2) Fallback → local SQLite file in project folder
-        try:
-            init_db(db_path="food.sqlite3")  # preferred explicit argument
-            return
-        except TypeError:
-            pass
-        except Exception:
-            pass
-
-        # 3) Last resort → legacy no-arg init
+    # --- Initialize DB explicitly from Secrets (Postgres) or fallback to SQLite ---
+    _db = dict(st.secrets.get("database", {}))
+    if _db.get("url"):           # preferred: single DSN in secrets
+        init_db(db_url=_db["url"])
+    elif _db:                    # parts: user/password/host/port/dbname/sslmode
+        init_db(**_db)
+    else:                        # local dev fallback (food.sqlite3)
         init_db()
-
-    _init_backend()
 
     # ---------- utilities ----------
     def _normalize_title(r: Any) -> str:
@@ -145,10 +71,7 @@ def render():
 
     # ---- image helpers (200x200 max, preserve aspect ratio, no upscaling) ----
     def _resize_image_to_max_200(file) -> Tuple[bytes, str, str]:
-        """
-        Resize uploaded image to max 200x200 while preserving aspect ratio (no upscaling).
-        Returns (img_bytes, mime_type, original_filename).
-        """
+        """Resize uploaded image to max 200x200 while preserving aspect ratio (no upscaling)."""
         image = Image.open(file)
         image.thumbnail((200, 200))
         buf = io.BytesIO()
@@ -160,19 +83,15 @@ def render():
         return img_bytes, mime, name
 
     def _pil_preview_200(file) -> Image.Image:
-        """Return a PIL image preview resized to max 200x200 (no upscaling)."""
         im = Image.open(file).copy()
         im.thumbnail((200, 200))
         return im
 
     def _make_no_preview_placeholder(size: int = 200) -> Image.Image:
-        """
-        Create a gray 200x200 image with large dark-gray 'No preview' text,
-        leaving a ~10px gap to the edges. Text is auto-sized to fit.
-        """
+        """Create a gray 200x200 placeholder with large dark-gray 'No preview' text and ~10px margin."""
         W, H = size, size
-        bg = (220, 220, 220)       # light gray background
-        fg = (80, 80, 80)          # dark gray text
+        bg = (220, 220, 220)
+        fg = (80, 80, 80)
         margin = 10
         text = "No\npreview"
 
@@ -211,10 +130,7 @@ def render():
 
     # ---------- ingredients helpers ----------
     def _rows_from_text(ingredients_text: str) -> List[Dict[str, str]]:
-        """
-        Parse ingredients from stored text.
-        Format: 'name<TAB>amount<TAB>unit' per line. Backward compatible with free text.
-        """
+        """Parse ingredients from TSV-like text; fallback to free text per line."""
         rows: List[Dict[str, str]] = []
         text = (ingredients_text or "").strip()
         if not text:
@@ -235,7 +151,6 @@ def render():
         return rows
 
     def _text_from_rows(rows: List[Dict[str, str]]) -> str:
-        """Build TSV-like text from ingredient rows; ignore rows without a name."""
         out_lines = []
         for r in rows:
             name = (r.get("name") or "").strip()
@@ -246,7 +161,7 @@ def render():
         return "\n".join(out_lines)
 
     def _render_ingredients_preview(ingredients_text: str):
-        """Render ingredients as bullet list in preview; fall back to raw text."""
+        """Render ingredients bullets in preview; fallback to raw text."""
         rows = _rows_from_text(ingredients_text)
         if rows:
             st.markdown("**Ingredients**")
@@ -262,8 +177,7 @@ def render():
                     suffix = f" — {amount}"
                 elif unit:
                     suffix = f" — {unit}"
-                safe_line = html.escape(f"{name}{suffix}")
-                bullets.append(f"- {safe_line}")
+                bullets.append(f"- {html.escape(f'{name}{suffix}')}")
             st.markdown("\n".join(bullets))
         else:
             txt = (ingredients_text or "").strip()
@@ -273,7 +187,7 @@ def render():
                 st.markdown(f"<div>{safe}</div>", unsafe_allow_html=True)
 
     def _ingredients_table_editor(state_key_prefix: str) -> List[Dict[str, str]]:
-        """Render a table-like editor for ingredients using Streamlit inputs."""
+        """Simple table-like editor for ingredients."""
         if f"{state_key_prefix}_rows" not in st.session_state:
             st.session_state[f"{state_key_prefix}_rows"] = [{"name": "", "amount": "", "unit": ""}]
 
@@ -283,46 +197,34 @@ def render():
 
         # Header
         hc1, hc2, hc3, hc4, hc5 = st.columns([0.3, 3.0, 1.2, 1.2, 0.7])
-        with hc1:
-            st.markdown("**•**")
-        with hc2:
-            st.markdown("**Name**")
-        with hc3:
-            st.markdown("**Amount**")
-        with hc4:
-            st.markdown("**Unit**")
-        with hc5:
-            st.markdown(" ")  # spacer
+        with hc1: st.markdown("**•**")
+        with hc2: st.markdown("**Name**")
+        with hc3: st.markdown("**Amount**")
+        with hc4: st.markdown("**Unit**")
+        with hc5: st.markdown(" ")
 
         updated_rows: List[Dict[str, str]] = []
         delete_index = None
 
         for i, r in enumerate(rows):
             c1, c2, c3, c4, c5 = st.columns([0.3, 3.0, 1.2, 1.2, 0.7])
-            with c1:
-                st.markdown("•")
+            with c1: st.markdown("•")
             with c2:
                 name = st.text_input(
-                    label=f"Name {i}",
-                    value=r.get("name", ""),
-                    key=f"{state_key_prefix}_name_{i}",
-                    label_visibility="collapsed",
+                    label=f"Name {i}", value=r.get("name", ""),
+                    key=f"{state_key_prefix}_name_{i}", label_visibility="collapsed",
                     placeholder="e.g., Flour",
                 )
             with c3:
                 amount = st.text_input(
-                    label=f"Amount {i}",
-                    value=r.get("amount", ""),
-                    key=f"{state_key_prefix}_amt_{i}",
-                    label_visibility="collapsed",
+                    label=f"Amount {i}", value=r.get("amount", ""),
+                    key=f"{state_key_prefix}_amt_{i}", label_visibility="collapsed",
                     placeholder="e.g., 200",
                 )
             with c4:
                 unit = st.text_input(
-                    label=f"Unit {i}",
-                    value=r.get("unit", ""),
-                    key=f"{state_key_prefix}_unit_{i}",
-                    label_visibility="collapsed",
+                    label=f"Unit {i}", value=r.get("unit", ""),
+                    key=f"{state_key_prefix}_unit_{i}", label_visibility="collapsed",
                     placeholder="e.g., g",
                 )
             with c5:
@@ -412,10 +314,9 @@ def render():
         # Title
         title = st.text_input("Title *", placeholder="e.g., Chicken Wings")
 
-        # Image upload + preview (intrinsic size, up to 200x200)
+        # Image upload + preview
         uploaded_img = st.file_uploader(
-            "Recipe image (optional)",
-            type=["png", "jpg", "jpeg", "webp"],
+            "Recipe image (optional)", type=["png", "jpg", "jpeg", "webp"],
             help="Add a photo for this recipe."
         )
         if uploaded_img is not None:
@@ -433,7 +334,7 @@ def render():
             help="This is used later to scale a shopping list."
         )
 
-        # Ingredients table editor
+        # Ingredients
         add_rows = _ingredients_table_editor("add_ing")
 
         # Instructions (auto-resize)
@@ -498,7 +399,7 @@ def render():
 
                         if isinstance(new_id, int):
                             ss.cb_selected_id = new_id
-                            ss.cb_mode = "view"
+                            ss.cb_mode = "view"  # go to preview right after creating
                         else:
                             ss.cb_mode = "list"
                         st.rerun()
@@ -509,9 +410,9 @@ def render():
                 _back_to_list()
                 st.rerun()
 
-        return  # Add page shows nothing else
+        return  # Add page ends here
 
-    # ========== VIEW PAGE (preview) ==========
+    # ========== VIEW PAGE ==========
     if ss.cb_mode == "view":
         recipe = None
         if ss.cb_selected_id is not None:
@@ -533,7 +434,6 @@ def render():
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
         serves_val = 0
         if isinstance(recipe, dict):
-            # supports serves / servings / people / persons keys for compatibility
             serves_val = int(
                 recipe.get("serves")
                 or recipe.get("servings")
@@ -542,12 +442,11 @@ def render():
                 or 0
             )
 
-        # Title (big, bold)
-        safe_title = html.escape(rtitle)
+        # Title
         st.markdown(
             f"""
             <div style="font-weight: 800; font-size: 1.8rem; line-height: 1.2; margin-bottom: 1rem;">
-              {safe_title}
+              {html.escape(rtitle)}
             </div>
             """,
             unsafe_allow_html=True,
@@ -555,15 +454,14 @@ def render():
 
         # Image or placeholder
         if rimg:
-            st.image(rimg, caption=None)  # intrinsic size (<=200x200)
+            st.image(rimg, caption=None)
         else:
             placeholder = _make_no_preview_placeholder(200)
             st.image(placeholder, caption=None)
 
-        # Serves sentence
+        # Serves sentence (black, not caption gray)
         if serves_val and serves_val > 0:
             plural = "people" if serves_val != 1 else "person"
-            # Use markdown to render in regular (black) text instead of caption gray
             st.markdown(f"**Serves for {serves_val} {plural}.**")
 
         # Ingredients & Instructions
@@ -706,7 +604,7 @@ def render():
 
                         ingredients_text = _text_from_rows(edit_rows)
 
-                        # Try with 'serves', fall back to 'servings'
+                        # Try 'serves', fall back to 'servings'
                         try:
                             update_recipe(
                                 recipe_id=rid,
@@ -746,7 +644,7 @@ def render():
 
         return  # Edit page done
 
-    # ========== LIST PAGE (default) ==========
+    # ========== LIST PAGE ==========
     if ss.cb_mode == "list":
         left, _ = st.columns([2.2, 3])
 
@@ -823,7 +721,7 @@ def render():
                             st.rerun()
                 st.divider()
 
-        # Auto-scroll to first typed character
+        # Auto-scroll to the first typed character
         q = (st.session_state.cb_query or "").strip()
         if q and q[0].isalpha():
             first_letter = q[0].upper()
