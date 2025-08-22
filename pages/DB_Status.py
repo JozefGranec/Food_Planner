@@ -11,8 +11,14 @@ from food.db import (
 st.set_page_config(page_title="Database Status", page_icon="🩺", layout="centered")
 st.title("🩺 Database Status")
 
-# Initialize (safe to call; your db layer handles PG vs SQLite)
-init_db()
+# --- Initialize DB explicitly from Secrets (Postgres) or fallback to SQLite ---
+_db = dict(st.secrets.get("database", {}))
+if _db.get("url"):           # preferred: single DSN in secrets
+    init_db(db_url=_db["url"])
+elif _db:                    # parts: user/password/host/port/dbname/sslmode
+    init_db(**_db)
+else:                        # local dev fallback
+    init_db()
 
 info = get_backend_info()
 engine = info.get("engine")
@@ -62,10 +68,10 @@ if st.button("Run write/read/delete self-test"):
         st.error(f"Self-test failed: {res['error']}")
 
 st.divider()
-st.subheader("How to use Postgres on Streamlit Cloud")
+st.subheader("Using Postgres on Streamlit Cloud")
 st.markdown(
-    "- Add these packages to requirements.txt: `streamlit`, `pillow`, `psycopg2-binary`.\n"
-    "- In Settings → Secrets, add a [database] section with a Postgres URL.\n"
+    "- Add to requirements.txt: `streamlit`, `pillow`, `psycopg2-binary`.\n"
+    "- In Settings → Secrets, set:\n"
 )
 st.code(
     '[database]\n'
