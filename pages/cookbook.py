@@ -162,7 +162,6 @@ def render():
                     suffix = f" — {amount}"
                 elif unit:
                     suffix = f" — {unit}"
-                # escape for markdown
                 safe_line = html.escape(f"{name}{suffix}")
                 bullets.append(f"- {safe_line}")
             st.markdown("**Ingredients**")
@@ -324,9 +323,20 @@ def render():
         if "add_ing_rows" not in st.session_state:
             st.session_state["add_ing_rows"] = [{"name": "", "amount": "", "unit": ""}]
 
-        # Not using a form for the whole page so we can add/delete rows without form submit limitations
+        # Title
         title = st.text_input("Title *", placeholder="e.g., Chicken Wings")
 
+        # Mandatory servings (dropdown 1..20)
+        servings_options = list(range(1, 21))
+        servings = st.selectbox(
+            "For how many people is this recipe served? *",
+            servings_options,
+            index=1,  # default to 2
+            help="This will be used later for shopping list calculations.",
+            key="add_servings_select",
+        )
+
+        # Image
         uploaded_img = st.file_uploader(
             "Recipe image (optional)",
             type=["png", "jpg", "jpeg", "webp"],
@@ -348,8 +358,15 @@ def render():
         c1, c2 = st.columns([1, 1])
         with c1:
             if st.button("Save", use_container_width=True, key="add_save_btn"):
+                errors = []
                 if not title.strip():
-                    st.error("Title is required.")
+                    errors.append("Title is required.")
+                if not isinstance(servings, int) or servings < 1:
+                    errors.append("Please select how many people this recipe serves.")
+
+                if errors:
+                    for e in errors:
+                        st.error(e)
                 else:
                     try:
                         img_bytes = img_mime = img_name = None
@@ -358,14 +375,29 @@ def render():
 
                         ingredients_text = _text_from_rows(add_rows)
 
-                        add_recipe(
-                            title=title.strip(),
-                            ingredients=ingredients_text,
-                            instructions=instructions.strip(),
-                            image_bytes=img_bytes,
-                            image_mime=img_mime,
-                            image_filename=img_name,
-                        )
+                        # Prefer saving servings if DB supports it
+                        try:
+                            add_recipe(
+                                title=title.strip(),
+                                ingredients=ingredients_text,
+                                instructions=instructions.strip(),
+                                image_bytes=img_bytes,
+                                image_mime=img_mime,
+                                image_filename=img_name,
+                                servings=servings,  # NEW
+                            )
+                        except TypeError:
+                            # Backwards compatibility if DB doesn't yet support 'servings'
+                            add_recipe(
+                                title=title.strip(),
+                                ingredients=ingredients_text,
+                                instructions=instructions.strip(),
+                                image_bytes=img_bytes,
+                                image_mime=img_mime,
+                                image_filename=img_name,
+                            )
+                            st.info("Note: your database doesn't yet store 'servings'. Consider adding a 'servings' column to use this later in shopping lists.")
+
                         st.toast(f"Recipe “{title.strip()}” added.", icon="✅")
                         _back_to_list()
                         st.rerun()
@@ -398,17 +430,25 @@ def render():
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
         ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
+        rserv = None
+        if isinstance(recipe, dict):
+            # support both 'servings' and legacy 'serve' keys just in case
+            rserv = recipe.get("servings", recipe.get("serve"))
 
-        # Title only: bold + larger font
+        # Title
         safe_title = html.escape(rtitle)
         st.markdown(
             f"""
-            <div style="font-weight: 800; font-size: 1.8rem; line-height: 1.2; margin-bottom: 1rem;">
+            <div style="font-weight: 800; font-size: 1.8rem; line-height: 1.2; margin-bottom: 0.4rem;">
               {safe_title}
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+        # Servings (if present)
+        if rserv:
+            st.markdown(f"**Serves:** {int(rserv)}")
 
         # Image
         if rimg:
@@ -478,6 +518,9 @@ def render():
         orig_ing_text = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
+        rserv = None
+        if isinstance(recipe, dict):
+            rserv = recipe.get("servings", recipe.get("serve"))
 
         st.subheader(f"Edit: {rtitle or 'Untitled'}")
 
@@ -486,6 +529,19 @@ def render():
             st.session_state["edit_ing_rows"] = _rows_from_text(orig_ing_text) or [{"name": "", "amount": "", "unit": ""}]
 
         new_title = st.text_input("Title *", value=rtitle or "")
+
+        # Servings selector (default 2 if missing)
+        servings_options = list(range(1, 21))
+        try:
+            default_idx = servings_options.index(int(rserv)) if rserv else 1
+        except Exception:
+            default_idx = 1
+        new_servings = st.selectbox(
+            "For how many people is this recipe served? *",
+            servings_options,
+            index=default_idx,
+            key="edit_servings_select",
+        )
 
         e_uploaded = st.file_uploader(
             "Change or add image (optional)",
@@ -523,16 +579,32 @@ def render():
 
                         ingredients_text = _text_from_rows(edit_rows)
 
-                        update_recipe(
-                            recipe_id=rid,
-                            title=new_title.strip(),
-                            ingredients=ingredients_text,
-                            instructions=new_instr.strip(),
-                            image_bytes=img_bytes if replace else None,
-                            image_mime=img_mime if replace else None,
-                            image_filename=img_name if replace else None,
-                            keep_existing_image=not replace,
-                        )
+                        # Prefer updating servings if DB supports it
+                        try:
+                            update_recipe(
+                                recipe_id=rid,
+                                title=new_title.strip(),
+                                ingredients=ingredients_text,
+                                instructions=new_instr.strip(),
+                                image_bytes=img_bytes if replace else None,
+                                image_mime=img_mime if replace else None,
+                                image_filename=img_name if replace else None,
+                                keep_existing_image=not replace,
+                                servings=int(new_servings),  # NEW
+                            )
+                        except TypeError:
+                            update_recipe(
+                                recipe_id=rid,
+                                title=new_title.strip(),
+                                ingredients=ingredients_text,
+                                instructions=new_instr.strip(),
+                                image_bytes=img_bytes if replace else None,
+                                image_mime=img_mime if replace else None,
+                                image_filename=img_name if replace else None,
+                                keep_existing_image=not replace,
+                            )
+                            st.info("Note: your database doesn't yet store 'servings'. Consider adding a 'servings' column to use this later in shopping lists.")
+
                         st.toast("Recipe updated.", icon="✏️")
                         ss.cb_mode = "view"
                         # clear edit table state after save
