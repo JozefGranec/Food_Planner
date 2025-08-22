@@ -13,17 +13,27 @@ st.title("🩺 Database Status")
 
 # --- Initialize DB explicitly from Secrets (Postgres) or fallback to SQLite ---
 _db = dict(st.secrets.get("database", {}))
-if _db.get("url"):           # preferred: single DSN in secrets
-    init_db(db_url=_db["url"])
-elif _db:                    # parts: user/password/host/port/dbname/sslmode
-    init_db(**_db)
-else:                        # local dev fallback
-    init_db()
-
-info = get_backend_info()
-engine = info.get("engine")
-dsn = info.get("dsn")
-path = info.get("path")
+try:
+    if _db.get("url"):
+        init_db(db_url=_db["url"])
+    elif _db:
+        init_db(**_db)
+    else:
+        init_db()
+except Exception as e:
+    masked = (_db.get("url") or "")
+    if "://" in masked:
+        # mask password
+        scheme, rest = masked.split("://", 1)
+        if "@" in rest and ":" in rest.split("@", 1)[0]:
+            up, tail = rest.split("@", 1)
+            user = up.split(":", 1)[0]
+            masked = f"{scheme}://{user}:****@{tail}"
+    st.error(
+        "Postgres connection failed. Check Secrets (URL/parts), password encoding, network/SSL.\n\n"
+        f"URL (masked): {masked or '(using parts)'}"
+    )
+    st.stop()
 
 def mask_dsn(d: str | None) -> str | None:
     if not d or "://" not in d:
