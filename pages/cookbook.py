@@ -1,15 +1,12 @@
-#gtr
-
-
 # pages/cookbook.py
 import io
 import html  # for safely escaping text inside HTML
 import string
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image  # for resizing uploaded images
+from PIL import Image, ImageDraw, ImageFont  # image helpers
 
 from food.db import (
     init_db,
@@ -59,7 +56,7 @@ def render():
         return buckets
 
     # ---- image helpers (200x200 max, preserve aspect ratio, no upscaling) ----
-    def _resize_image_to_max_200(file) -> (bytes, str, str):
+    def _resize_image_to_max_200(file) -> Tuple[bytes, str, str]:
         """
         Resize uploaded image to max 200x200 while preserving aspect ratio (no upscaling).
         Returns (img_bytes, mime_type, original_filename).
@@ -70,8 +67,8 @@ def render():
         fmt = image.format or "PNG"
         image.save(buf, format=fmt)
         img_bytes = buf.getvalue()
-        mime = getattr(file, "type", None) or ("image/png" if fmt and fmt.upper() == "PNG" else f"image/{(fmt or 'png').lower()}")
-        name = getattr(file, "name", None) or f"image.{(fmt or 'png').lower()}"
+        mime = getattr(file, "type", None) or ("image/png" if fmt.upper() == "PNG" else f"image/{fmt.lower()}")
+        name = getattr(file, "name", None) or f"image.{fmt.lower()}"
         return img_bytes, mime, name
 
     def _pil_preview_200(file) -> Image.Image:
@@ -80,69 +77,59 @@ def render():
         im.thumbnail((200, 200))
         return im
 
-    # ---------- servings helpers ----------
-    SERVES_TAG_PREFIX = "[SERVES:"
-    SERVES_TAG_SUFFIX = "]"
+    def _make_no_preview_placeholder(size: int = 200) -> Image.Image:
+        """
+        Create a gray 200x200 image with large dark-gray 'No preview' text,
+        leaving a ~10px gap to the edges. Text is auto-sized to fit.
+        """
+        W, H = size, size
+        bg = (220, 220, 220)       # light gray background
+        fg = (80, 80, 80)          # dark gray text
+        margin = 10
+        text = "No\npreview"
 
-    def _extract_servings_field(rec: Any) -> Optional[int]:
-        """
-        Try to read 'servings' (or nearby names) from the recipe dict.
-        Returns an int if found and > 0, else None.
-        """
-        if not isinstance(rec, dict):
-            return None
-        candidates = [
-            "servings", "serve", "serves", "people", "num_people",
-            "portion", "portions", "servings_count"
-        ]
-        for k in candidates:
-            if k in rec and rec[k] is not None and str(rec[k]).strip() != "":
+        img = Image.new("RGB", (W, H), color=bg)
+        draw = ImageDraw.Draw(img)
+
+        # Try to use a TTF font; fall back to default
+        def get_font(sz: int):
+            for fam in ("DejaVuSans.ttf", "arial.ttf"):
                 try:
-                    val = int(str(rec[k]).strip())
-                    if val > 0:
-                        return val
+                    return ImageFont.truetype(fam, sz)
                 except Exception:
-                    pass
-        return None
+                    continue
+            return ImageFont.load_default()
 
-    def _embed_servings_in_text(text: str, servings: int) -> str:
-        """
-        Add/replace a hidden servings tag at the top of the given text.
-        Format: [SERVES: N] on its own first line.
-        """
-        t = text or ""
-        # remove any existing serves tag first
-        _, cleaned = _extract_servings_from_text(t)
-        return f"{SERVES_TAG_PREFIX} {servings}{SERVES_TAG_SUFFIX}\n{cleaned}".strip("\n")
+        # Dynamically fit text
+        max_w, max_h = W - 2 * margin, H - 2 * margin
+        font_size = 120
+        font = get_font(font_size)
 
-    def _extract_servings_from_text(text: str) -> Tuple[Optional[int], str]:
-        """
-        Look for a first-line tag like: [SERVES: N]
-        Returns (servings_or_None, cleaned_text_without_tag)
-        """
-        if not text:
-            return None, ""
-        raw = text.replace("\r\n", "\n").replace("\r", "\n")
-        lines = raw.split("\n")
-        if lines:
-            first = lines[0].strip()
-            if first.startswith(SERVES_TAG_PREFIX) and first.endswith(SERVES_TAG_SUFFIX):
-                # Try to parse number between prefix and suffix
-                try:
-                    inside = first[len(SERVES_TAG_PREFIX):-len(SERVES_TAG_SUFFIX)].strip()
-                    val = int(inside)
-                    if val > 0:
-                        return val, "\n".join(lines[1:]).lstrip("\n")
-                except Exception:
-                    pass
-        return None, raw
+        # helpers for bbox
+        def measure(f):
+            if hasattr(draw, "multiline_textbbox") and isinstance(f, ImageFont.FreeTypeFont):
+                b = draw.multiline_textbbox((0, 0), text, font=f, spacing=6, align="center")
+                return b[2] - b[0], b[3] - b[1]
+            else:
+                # fallback
+                return draw.multiline_textsize(text, font=f, spacing=6)
+
+        w, h = measure(font)
+        while (w > max_w or h > max_h) and font_size > 8:
+            font_size -= 2
+            font = get_font(font_size)
+            w, h = measure(font)
+
+        x = (W - w) / 2
+        y = (H - h) / 2
+        draw.multiline_text((x, y), text, font=font, fill=fg, align="center", spacing=6)
+        return img
 
     # ---------- ingredients helpers ----------
     def _rows_from_text(ingredients_text: str) -> List[Dict[str, str]]:
         """
         Parse ingredients from stored text.
-        Expected saved format (TSV-like): 'name<TAB>amount<TAB>unit' per line.
-        Backwards compatible with older free-form text: produce one row with 'name' as the whole line.
+        Format: 'name<TAB>amount<TAB>unit' per line. Backward compatible with free text.
         """
         rows: List[Dict[str, str]] = []
         text = (ingredients_text or "").strip()
@@ -164,16 +151,13 @@ def render():
         return rows
 
     def _text_from_rows(rows: List[Dict[str, str]]) -> str:
-        """
-        Build TSV-like text from ingredient rows: 'name<TAB>amount<TAB>unit' per line.
-        Empty-name rows are ignored.
-        """
+        """Build TSV-like text from ingredient rows; ignore rows without a name."""
         out_lines = []
         for r in rows:
             name = (r.get("name") or "").strip()
             amount = (r.get("amount") or "").strip()
             unit = (r.get("unit") or "").strip()
-            if name:  # only keep rows with a name
+            if name:
                 out_lines.append(f"{name}\t{amount}\t{unit}")
         return "\n".join(out_lines)
 
@@ -184,6 +168,7 @@ def render():
         """
         rows = _rows_from_text(ingredients_text)
         if rows:
+            st.markdown("**Ingredients**")
             bullets = []
             for r in rows:
                 name = r.get("name", "").strip()
@@ -198,7 +183,6 @@ def render():
                     suffix = f" — {unit}"
                 safe_line = html.escape(f"{name}{suffix}")
                 bullets.append(f"- {safe_line}")
-            st.markdown("**Ingredients**")
             st.markdown("\n".join(bullets))
         else:
             txt = (ingredients_text or "").strip()
@@ -208,12 +192,7 @@ def render():
                 st.markdown(f"<div>{safe}</div>", unsafe_allow_html=True)
 
     def _ingredients_table_editor(state_key_prefix: str) -> List[Dict[str, str]]:
-        """
-        Render a table-like editor for ingredients using Streamlit inputs.
-        Returns the updated list of rows from the current widget values.
-        Uses st.session_state to persist between reruns.
-        """
-        # Ensure list exists in session
+        """Render a table-like editor for ingredients using Streamlit inputs."""
         if f"{state_key_prefix}_rows" not in st.session_state:
             st.session_state[f"{state_key_prefix}_rows"] = [{"name": "", "amount": "", "unit": ""}]
 
@@ -232,9 +211,8 @@ def render():
         with hc4:
             st.markdown("**Unit**")
         with hc5:
-            st.markdown(" ")  # spacer for delete column
+            st.markdown(" ")  # spacer
 
-        # Collect updates
         updated_rows: List[Dict[str, str]] = []
         delete_index = None
 
@@ -271,7 +249,6 @@ def render():
                     delete_index = i
             updated_rows.append({"name": name, "amount": amount, "unit": unit})
 
-        # Row deletion
         if delete_index is not None:
             if 0 <= delete_index < len(updated_rows):
                 updated_rows.pop(delete_index)
@@ -280,13 +257,11 @@ def render():
             st.session_state[f"{state_key_prefix}_rows"] = updated_rows
             st.rerun()
 
-        # Add row button
         if st.button("➕ Add row", key=f"{state_key_prefix}_addrow"):
             updated_rows.append({"name": "", "amount": "", "unit": ""})
             st.session_state[f"{state_key_prefix}_rows"] = updated_rows
             st.rerun()
 
-        # Persist latest values
         st.session_state[f"{state_key_prefix}_rows"] = updated_rows
         return updated_rows
 
@@ -307,32 +282,6 @@ def render():
             unsafe_allow_html=True,
         )
 
-    # Autosize helper for text_area rows (visual min height)
-    def _auto_rows(current_text: str, base: int = 6, max_rows: int = 24) -> int:
-        lines = max(1, (current_text or "").count("\n") + 1)
-        return max(base, min(lines + 1, max_rows))
-
-    # After saving a new recipe, resolve its ID so we can open preview immediately
-    def _resolve_new_recipe_id(saved_title: str) -> Optional[int]:
-        """
-        Try to find the most likely ID of the just-saved recipe by title.
-        Picks the highest ID among exact title matches as a heuristic.
-        """
-        try:
-            items = list_recipes() or []
-        except Exception:
-            return None
-        saved_norm = (saved_title or "").strip().lower()
-        matches = [r for r in items if _normalize_title(r).strip().lower() == saved_norm]
-        if not matches:
-            return None
-        # choose the max id among matches
-        ids = [(_get_id(r) or 0) for r in matches]
-        try:
-            return max(ids)
-        except Exception:
-            return _get_id(matches[-1])
-
     # ---------- session ----------
     ss = st.session_state
     if "cb_mode" not in ss:
@@ -349,9 +298,7 @@ def render():
         ss.cb_mode = "add"
         ss.cb_selected_id = None
         ss.cb_confirm_delete_id = None
-        # reset ingredients editor + add instructions state
         st.session_state.pop("add_ing_rows", None)
-        st.session_state.pop("add_instructions", None)
 
     def _back_to_list():
         ss.cb_mode = "list"
@@ -367,9 +314,7 @@ def render():
         ss.cb_selected_id = recipe_id
         ss.cb_mode = "edit"
         ss.cb_confirm_delete_id = None
-        # reset editor; will initialize from recipe on render
         st.session_state.pop("edit_ing_rows", None)
-        st.session_state.pop("edit_instructions", None)
 
     # ---------- header ----------
     st.header("Cook Book", divider="gray")
@@ -380,26 +325,13 @@ def render():
     if ss.cb_mode == "add":
         st.subheader("Add a new recipe")
 
-        # Initialize ingredients editor storage for Add
         if "add_ing_rows" not in st.session_state:
             st.session_state["add_ing_rows"] = [{"name": "", "amount": "", "unit": ""}]
 
         # Title
         title = st.text_input("Title *", placeholder="e.g., Chicken Wings")
 
-        # Servings (required)
-        servings_options = list(range(1, 21))  # 1..20
-        servings_idx_default = 1  # default to "2"
-        sev = st.selectbox(
-            "For how many people is this recipe served? *",
-            servings_options,
-            index=servings_idx_default,
-            help="This is used for later shopping list calculations.",
-            key="add_servings",
-        )
-        servings_val = int(sev) if sev else None
-
-        # Image (with preview)
+        # Image upload + preview (intrinsic size, up to 200x200)
         uploaded_img = st.file_uploader(
             "Recipe image (optional)",
             type=["png", "jpg", "jpeg", "webp"],
@@ -412,26 +344,37 @@ def render():
             except Exception:
                 st.warning("Could not preview this image format, but it will still be saved after resizing.")
 
+        # Serves (mandatory)
+        serves = st.selectbox(
+            "For how many people is this recipe served? *",
+            options=list(range(1, 21)),
+            index=1,  # default to 2
+            help="This is used later to scale a shopping list."
+        )
+
         # Ingredients table editor
         add_rows = _ingredients_table_editor("add_ing")
 
-        # Instructions (auto-sized)
-        current_add_instr = st.session_state.get("add_instructions", "")
-        add_instr_rows = _auto_rows(current_add_instr)
-        instructions = st.text_area(
-            "Instructions",
-            value=current_add_instr,
-            key="add_instructions",
-            placeholder="Steps…",
-            help="This box grows with your text for easier reading.",
-            height=None,
-            max_chars=None,
-            label_visibility="visible",
-            disabled=False,
-        )
-        st.markdown(
-            f"<style>.stTextArea textarea{{min-height:{add_instr_rows * 24}px;}}</style>",
-            unsafe_allow_html=True,
+        # Instructions (auto-resize)
+        instructions = st.text_area("Instructions", placeholder="Steps…", key="add_instructions")
+        components.html(
+            """
+            <script>
+              const doc = window.parent.document;
+              function autosize() {
+                const el = doc.querySelector('textarea[aria-label="Instructions"]');
+                if (!el) return;
+                el.style.height = 'auto';
+                el.style.height = Math.min(el.scrollHeight + 2, 1000) + 'px';
+              }
+              const el = doc.querySelector('textarea[aria-label="Instructions"]');
+              if (el) {
+                el.addEventListener('input', autosize);
+                setTimeout(autosize, 50);
+              }
+            </script>
+            """,
+            height=0,
         )
 
         c1, c2 = st.columns([1, 1])
@@ -439,8 +382,6 @@ def render():
             if st.button("Save", use_container_width=True, key="add_save_btn"):
                 if not title.strip():
                     st.error("Title is required.")
-                elif not servings_val:
-                    st.error("Please select how many people this recipe serves.")
                 else:
                     try:
                         img_bytes = img_mime = img_name = None
@@ -449,46 +390,24 @@ def render():
 
                         ingredients_text = _text_from_rows(add_rows)
 
-                        # Always embed servings tag into instructions (for fallback display)
-                        instructions_to_save = _embed_servings_in_text(instructions.strip(), int(servings_val))
-
-                        # Try to store and capture returned ID if any
-                        new_id = None
-                        try:
-                            new_id = add_recipe(
-                                title=title.strip(),
-                                ingredients=ingredients_text,
-                                instructions=instructions_to_save,
-                                image_bytes=img_bytes,
-                                image_mime=img_mime,
-                                image_filename=img_name,
-                                servings=int(servings_val),
-                            )
-                        except TypeError:
-                            # Fallback: call without servings param
-                            new_id = add_recipe(
-                                title=title.strip(),
-                                ingredients=ingredients_text,
-                                instructions=instructions_to_save,
-                                image_bytes=img_bytes,
-                                image_mime=img_mime,
-                                image_filename=img_name,
-                            )
-
-                        # If DB didn't return an id, resolve by query
-                        if not new_id:
-                            new_id = _resolve_new_recipe_id(title.strip())
-
+                        # Expect add_recipe to return new id; fall back to list if not
+                        new_id = add_recipe(
+                            title=title.strip(),
+                            ingredients=ingredients_text,
+                            instructions=instructions.strip(),
+                            image_bytes=img_bytes,
+                            image_mime=img_mime,
+                            image_filename=img_name,
+                            serves=int(serves),
+                        )
                         st.toast(f"Recipe “{title.strip()}” added.", icon="✅")
 
-                        # 🔁 Show PREVIEW immediately
-                        if new_id:
-                            ss.cb_selected_id = int(new_id)
+                        if isinstance(new_id, int):
+                            ss.cb_selected_id = new_id
                             ss.cb_mode = "view"
                         else:
-                            # Fallback to list if we couldn't resolve an ID
+                            # best effort: jump to list
                             ss.cb_mode = "list"
-
                         st.rerun()
                     except Exception as e:
                         st.error(f"Could not add recipe: {e}")
@@ -499,7 +418,7 @@ def render():
 
         return  # Add page shows nothing else
 
-    # ========== VIEW PAGE (preview: big bold title + image + text, no inputs) ==========
+    # ========== VIEW PAGE (preview) ==========
     if ss.cb_mode == "view":
         recipe = None
         if ss.cb_selected_id is not None:
@@ -518,15 +437,13 @@ def render():
         rtitle = _normalize_title(recipe) or "Untitled"
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
         ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
-        rinstr_raw = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
+        rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
+        serves_val = 0
+        if isinstance(recipe, dict):
+            # supports serves / people / persons keys for compatibility
+            serves_val = int(recipe.get("serves") or recipe.get("people") or recipe.get("persons") or 0)
 
-        # Prefer explicit field; else parse from instructions tag
-        rserv_field = _extract_servings_field(recipe)
-        rserv_tag, rinstr_clean = _extract_servings_from_text(rinstr_raw)
-        rserv = rserv_field if rserv_field is not None else rserv_tag
-        rinstr = rinstr_clean  # show instructions without the tag
-
-        # Title only: bold + larger font
+        # Title (big, bold)
         safe_title = html.escape(rtitle)
         st.markdown(
             f"""
@@ -537,20 +454,20 @@ def render():
             unsafe_allow_html=True,
         )
 
-        # Image
+        # Image or placeholder
         if rimg:
-            st.image(rimg, caption=None)
+            st.image(rimg, caption=None)  # intrinsic size (<=200x200)
         else:
-            st.caption("No image uploaded.")
+            placeholder = _make_no_preview_placeholder(200)
+            st.image(placeholder, caption=None)
 
-        # Servings sentence directly UNDER the image
-        if rserv is not None:
-            st.markdown(f"**Serves for {rserv} {'people' if rserv != 1 else 'person'}.**")
+        # Serves sentence placed under the image
+        if serves_val and serves_val > 0:
+            plural = "people" if serves_val != 1 else "person"
+            st.caption(f"Serves for {serves_val} {plural}.")
 
-        # Ingredients as bullet list
+        # Ingredients & Instructions
         _render_ingredients_preview(ringing)
-
-        # Instructions plain text (if any)
         if (rinstr or "").strip():
             _render_multiline("Instructions", rinstr, top_margin="1.2rem")
 
@@ -589,7 +506,7 @@ def render():
                     st.rerun()
         return  # View page done
 
-    # ========== EDIT PAGE (table editor visible here) ==========
+    # ========== EDIT PAGE ==========
     if ss.cb_mode == "edit":
         recipe = None
         if ss.cb_selected_id is not None:
@@ -608,35 +525,18 @@ def render():
         rtitle = _normalize_title(recipe)
         orig_ing_text = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
-        rinstr_raw = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
-
-        # Seed servings and clean instructions
-        rserv_field = _extract_servings_field(recipe)
-        rserv_tag, rinstr_clean = _extract_servings_from_text(rinstr_raw)
-        rserv = rserv_field if rserv_field is not None else (rserv_tag or 2)  # default 2 if missing
-        rinstr_init = rinstr_clean
+        rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
+        serves_existing = 0
+        if isinstance(recipe, dict):
+            serves_existing = int(recipe.get("serves") or recipe.get("people") or recipe.get("persons") or 0)
 
         st.subheader(f"Edit: {rtitle or 'Untitled'}")
 
-        # Initialize editor rows for edit mode once per recipe
         if "edit_ing_rows" not in st.session_state:
             st.session_state["edit_ing_rows"] = _rows_from_text(orig_ing_text) or [{"name": "", "amount": "", "unit": ""}]
 
-        # Title
         new_title = st.text_input("Title *", value=rtitle or "")
 
-        # Servings (required)
-        servings_options = list(range(1, 21))
-        start_idx = servings_options.index(rserv) if rserv in servings_options else 1
-        new_servings = st.selectbox(
-            "For how many people is this recipe served? *",
-            servings_options,
-            index=start_idx,
-            help="This is used for later shopping list calculations.",
-            key="edit_servings",
-        )
-
-        # Image uploader
         e_uploaded = st.file_uploader(
             "Change or add image (optional)",
             type=["png", "jpg", "jpeg", "webp"],
@@ -653,22 +553,37 @@ def render():
             except Exception:
                 st.warning("Could not preview this image format, but it will still be saved after resizing.")
 
-        # Ingredients table editor
+        # Serves (mandatory)
+        new_serves = st.selectbox(
+            "For how many people is this recipe served? *",
+            options=list(range(1, 21)),
+            index=max(0, min(19, (serves_existing or 2) - 1)),
+            help="This is used later to scale a shopping list."
+        )
+
+        # Ingredients editor
         edit_rows = _ingredients_table_editor("edit_ing")
 
-        # Instructions (auto-sized)
-        current_edit_instr = st.session_state.get("edit_instructions", rinstr_init or "")
-        edit_instr_rows = _auto_rows(current_edit_instr)
-        new_instr_visible = st.text_area(
-            "Instructions",
-            value=current_edit_instr,
-            key="edit_instructions",
-            height=None,
-            help="This box grows with your text for easier reading.",
-        )
-        st.markdown(
-            f"<style>.stTextArea textarea{{min-height:{edit_instr_rows * 24}px;}}</style>",
-            unsafe_allow_html=True,
+        # Instructions (auto-resize)
+        new_instr = st.text_area("Instructions", value=rinstr, key="edit_instructions")
+        components.html(
+            """
+            <script>
+              const doc = window.parent.document;
+              function autosize() {
+                const el = doc.querySelector('textarea[aria-label="Instructions"]');
+                if (!el) return;
+                el.style.height = 'auto';
+                el.style.height = Math.min(el.scrollHeight + 2, 1000) + 'px';
+              }
+              const el = doc.querySelector('textarea[aria-label="Instructions"]');
+              if (el) {
+                el.addEventListener('input', autosize);
+                setTimeout(autosize, 50);
+              }
+            </script>
+            """,
+            height=0,
         )
 
         c1, c2 = st.columns([1, 1])
@@ -676,8 +591,6 @@ def render():
             if st.button("Save changes", use_container_width=True, key="edit_save_btn"):
                 if not new_title.strip():
                     st.error("Title is required.")
-                elif not new_servings:
-                    st.error("Please select how many people this recipe serves.")
                 else:
                     try:
                         replace = e_uploaded is not None
@@ -687,37 +600,19 @@ def render():
 
                         ingredients_text = _text_from_rows(edit_rows)
 
-                        # Always embed servings tag into instructions (for fallback display)
-                        instructions_to_save = _embed_servings_in_text(new_instr_visible.strip(), int(new_servings))
-
-                        # Try to update with servings; fallback without if API doesn't support it
-                        try:
-                            update_recipe(
-                                recipe_id=rid,
-                                title=new_title.strip(),
-                                ingredients=ingredients_text,
-                                instructions=instructions_to_save,
-                                image_bytes=img_bytes if replace else None,
-                                image_mime=img_mime if replace else None,
-                                image_filename=img_name if replace else None,
-                                keep_existing_image=not replace,
-                                servings=int(new_servings),
-                            )
-                        except TypeError:
-                            update_recipe(
-                                recipe_id=rid,
-                                title=new_title.strip(),
-                                ingredients=ingredients_text,
-                                instructions=instructions_to_save,
-                                image_bytes=img_bytes if replace else None,
-                                image_mime=img_mime if replace else None,
-                                image_filename=img_name if replace else None,
-                                keep_existing_image=not replace,
-                            )
-
+                        update_recipe(
+                            recipe_id=rid,
+                            title=new_title.strip(),
+                            ingredients=ingredients_text,
+                            instructions=new_instr.strip(),
+                            image_bytes=img_bytes if replace else None,
+                            image_mime=img_mime if replace else None,
+                            image_filename=img_name if replace else None,
+                            keep_existing_image=not replace,
+                            serves=int(new_serves),
+                        )
                         st.toast("Recipe updated.", icon="✏️")
                         ss.cb_mode = "view"
-                        # clear edit table state after save
                         st.session_state.pop("edit_ing_rows", None)
                         st.rerun()
                     except Exception as e:
@@ -725,7 +620,6 @@ def render():
         with c2:
             if st.button("Cancel", use_container_width=True, key="edit_cancel_btn"):
                 ss.cb_mode = "view"
-                # clear edit table state on cancel
                 st.session_state.pop("edit_ing_rows", None)
                 st.rerun()
 
@@ -815,7 +709,8 @@ def render():
             components.html(
                 f"""
                 <script>
-                  const el = document.getElementById('sec-{first_letter}');
+                  const doc = window.parent.document;
+                  const el = doc.getElementById('sec-{first_letter}');
                   if (el) {{
                     el.scrollIntoView({{behavior: 'instant', block: 'start'}});
                   }}
