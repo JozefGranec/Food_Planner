@@ -166,4 +166,56 @@ def update_recipe(*, recipe_id:int, title:Optional[str]=None, ingredients:Option
                   instructions:Optional[str]=None, image_bytes:Optional[bytes]=None,
                   image_mime:Optional[str]=None, image_filename:Optional[str]=None,
                   keep_existing_image:bool=True, serves:Optional[int]=None, servings:Optional[int]=None) -> None:
-    con=_conn(_
+    con=_conn(); cur=con.cursor(); eng=_engine()
+    sets=[]; params=[]
+    if title is not None:        sets.append("title=%s" if eng=="postgres" else "title=?"); params.append(title.strip())
+    if ingredients is not None:  sets.append("ingredients=%s" if eng=="postgres" else "ingredients=?"); params.append(ingredients)
+    if instructions is not None: sets.append("instructions=%s" if eng=="postgres" else "instructions=?"); params.append(instructions)
+    t_serves = serves if serves is not None else servings
+    if t_serves is not None:     sets.append("serves=%s" if eng=="postgres" else "serves=?"); params.append(_to_int(t_serves,0))
+    if keep_existing_image:
+        if image_bytes is not None: sets.append("image_bytes=%s" if eng=="postgres" else "image_bytes=?"); params.append(_pg_bin(image_bytes) if eng=="postgres" else image_bytes)
+        if image_mime  is not None: sets.append("image_mime=%s"  if eng=="postgres" else "image_mime=?");  params.append(image_mime)
+        if image_filename is not None: sets.append("image_filename=%s" if eng=="postgres" else "image_filename=?"); params.append(image_filename)
+    else:
+        sets += ["image_bytes=%s" if eng=="postgres" else "image_bytes=?",
+                 "image_mime=%s"  if eng=="postgres" else "image_mime=?",
+                 "image_filename=%s" if eng=="postgres" else "image_filename=?"]
+        params += [(_pg_bin(image_bytes) if eng=="postgres" and image_bytes is not None else image_bytes),
+                   image_mime, image_filename]
+    if eng=="postgres":
+        sets.append("updated_at=NOW()")
+        params.append(recipe_id)
+        sql=f"UPDATE recipes SET {', '.join(sets)} WHERE id=%s;"
+    else:
+        sets.append("updated_at=?"); params.append(sqlite3_datetime_now()); params.append(recipe_id)
+        sql=f"UPDATE recipes SET {', '.join(sets)} WHERE id=?;"
+    cur.execute(sql, tuple(params)); con.commit(); cur.close()
+
+def delete_recipe(recipe_id:int)->None:
+    con=_conn(); cur=con.cursor()
+    if _engine()=="postgres": cur.execute("DELETE FROM recipes WHERE id=%s;", (recipe_id,))
+    else:                     cur.execute("DELETE FROM recipes WHERE id=?;",   (recipe_id,))
+    con.commit(); cur.close()
+
+def count_recipes()->int:
+    con=_conn(); cur=con.cursor(); cur.execute("SELECT COUNT(*) FROM recipes;")
+    row=cur.fetchone(); cur.close(); return int(row[0]) if row else 0
+
+# ---------- Diagnostics ----------
+def get_backend_info()->dict:
+    return {"engine": _engine(), "dsn": _DB.get("dsn"), "path": _DB.get("path")}
+
+def ping()->bool:
+    try:
+        c=_conn().cursor(); c.execute("SELECT 1;"); c.fetchone(); c.close(); return True
+    except Exception: return False
+
+def self_test_write_read_delete()->dict:
+    try:
+        nid = add_recipe(title="__db_self_test__", ingredients="", instructions="", serves=1)
+        ok = bool(get_recipe(nid) and get_recipe(nid)["id"]==nid)
+        delete_recipe(nid)
+        return {"ok": ok, "id": nid, "error": None}
+    except Exception as e:
+        return {"ok": False, "id": None, "error": str(e)}
