@@ -3,4 +3,6 @@ pandas
 sqlmodel>=0.0.16
 sqlalchemy>=2.0
 psycopg2-binary>=2.9    # needed only for Postgres; harmless on SQLite
+pillow
+
 
