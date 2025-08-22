@@ -2,7 +2,7 @@
 import io
 import html  # for safely escaping text inside HTML
 import string
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -76,6 +76,30 @@ def render():
         im = Image.open(file).copy()
         im.thumbnail((200, 200))
         return im
+
+    # --- text-area helper: autosize if supported; otherwise estimate height ---
+    def _text_area_autosize(
+        label: str,
+        *,
+        value: Optional[str] = None,
+        placeholder: Optional[str] = None,
+        key: Optional[str] = None,
+    ):
+        """
+        Streamlit >= 1.30: use autosize=True so the box grows with content.
+        Older versions: compute a reasonable height based on content length/lines.
+        """
+        text = value if value is not None else ""
+        try:
+            # Newer Streamlit
+            return st.text_area(label, value=text, placeholder=placeholder, key=key, autosize=True)
+        except TypeError:
+            # Fallback for older Streamlit: estimate height
+            approx_cols = 90  # rough characters per line
+            line_based = (text.count("\n") + 3)
+            width_based = (len(text) // approx_cols) + 3
+            num_lines = max(6, line_based, width_based)
+            return st.text_area(label, value=text, placeholder=placeholder, key=key, height=min(800, num_lines * 24))
 
     # ---------- ingredients helpers ----------
     def _rows_from_text(ingredients_text: str) -> List[Dict[str, str]]:
@@ -176,7 +200,7 @@ def render():
         with hc4:
             st.markdown("**Unit**")
         with hc5:
-            st.markdown(" ")  # spacer for delete column
+            st.markdown(" ")  # spacer for delete column
 
         # Collect updates
         updated_rows: List[Dict[str, str]] = []
@@ -318,7 +342,8 @@ def render():
         # Ingredients table editor
         add_rows = _ingredients_table_editor("add_ing")
 
-        instructions = st.text_area("Instructions", placeholder="Steps…")
+        # AUTOSIZE instructions
+        instructions = _text_area_autosize("Instructions", placeholder="Steps…")
 
         c1, c2 = st.columns([1, 1])
         with c1:
@@ -481,7 +506,8 @@ def render():
         # Ingredients table editor
         edit_rows = _ingredients_table_editor("edit_ing")
 
-        new_instr = st.text_area("Instructions", value=rinstr)
+        # AUTOSIZE instructions
+        new_instr = _text_area_autosize("Instructions", value=rinstr)
 
         c1, c2 = st.columns([1, 1])
         with c1:
