@@ -1,4 +1,5 @@
-#test
+#gtr
+
 
 # pages/cookbook.py
 import io
@@ -311,6 +312,27 @@ def render():
         lines = max(1, (current_text or "").count("\n") + 1)
         return max(base, min(lines + 1, max_rows))
 
+    # After saving a new recipe, resolve its ID so we can open preview immediately
+    def _resolve_new_recipe_id(saved_title: str) -> Optional[int]:
+        """
+        Try to find the most likely ID of the just-saved recipe by title.
+        Picks the highest ID among exact title matches as a heuristic.
+        """
+        try:
+            items = list_recipes() or []
+        except Exception:
+            return None
+        saved_norm = (saved_title or "").strip().lower()
+        matches = [r for r in items if _normalize_title(r).strip().lower() == saved_norm]
+        if not matches:
+            return None
+        # choose the max id among matches
+        ids = [(_get_id(r) or 0) for r in matches]
+        try:
+            return max(ids)
+        except Exception:
+            return _get_id(matches[-1])
+
     # ---------- session ----------
     ss = st.session_state
     if "cb_mode" not in ss:
@@ -430,9 +452,10 @@ def render():
                         # Always embed servings tag into instructions (for fallback display)
                         instructions_to_save = _embed_servings_in_text(instructions.strip(), int(servings_val))
 
-                        # Try to store servings separately if DB supports it
+                        # Try to store and capture returned ID if any
+                        new_id = None
                         try:
-                            add_recipe(
+                            new_id = add_recipe(
                                 title=title.strip(),
                                 ingredients=ingredients_text,
                                 instructions=instructions_to_save,
@@ -443,7 +466,7 @@ def render():
                             )
                         except TypeError:
                             # Fallback: call without servings param
-                            add_recipe(
+                            new_id = add_recipe(
                                 title=title.strip(),
                                 ingredients=ingredients_text,
                                 instructions=instructions_to_save,
@@ -452,8 +475,20 @@ def render():
                                 image_filename=img_name,
                             )
 
+                        # If DB didn't return an id, resolve by query
+                        if not new_id:
+                            new_id = _resolve_new_recipe_id(title.strip())
+
                         st.toast(f"Recipe “{title.strip()}” added.", icon="✅")
-                        _back_to_list()
+
+                        # 🔁 Show PREVIEW immediately
+                        if new_id:
+                            ss.cb_selected_id = int(new_id)
+                            ss.cb_mode = "view"
+                        else:
+                            # Fallback to list if we couldn't resolve an ID
+                            ss.cb_mode = "list"
+
                         st.rerun()
                     except Exception as e:
                         st.error(f"Could not add recipe: {e}")
