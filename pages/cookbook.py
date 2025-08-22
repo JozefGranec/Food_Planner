@@ -4,7 +4,7 @@
 import io
 import html  # for safely escaping text inside HTML
 import string
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -79,10 +79,13 @@ def render():
         im.thumbnail((200, 200))
         return im
 
-    # ---------- servings helper ----------
-    def _extract_servings(rec: Any) -> Optional[int]:
+    # ---------- servings helpers ----------
+    SERVES_TAG_PREFIX = "[SERVES:"
+    SERVES_TAG_SUFFIX = "]"
+
+    def _extract_servings_field(rec: Any) -> Optional[int]:
         """
-        Try to read 'servings' from the recipe dict using several possible keys.
+        Try to read 'servings' (or nearby names) from the recipe dict.
         Returns an int if found and > 0, else None.
         """
         if not isinstance(rec, dict):
@@ -100,6 +103,38 @@ def render():
                 except Exception:
                     pass
         return None
+
+    def _embed_servings_in_text(text: str, servings: int) -> str:
+        """
+        Add/replace a hidden servings tag at the top of the given text.
+        Format: [SERVES: N] on its own first line.
+        """
+        t = text or ""
+        # remove any existing serves tag first
+        _, cleaned = _extract_servings_from_text(t)
+        return f"{SERVES_TAG_PREFIX} {servings}{SERVES_TAG_SUFFIX}\n{cleaned}".strip("\n")
+
+    def _extract_servings_from_text(text: str) -> Tuple[Optional[int], str]:
+        """
+        Look for a first-line tag like: [SERVES: N]
+        Returns (servings_or_None, cleaned_text_without_tag)
+        """
+        if not text:
+            return None, ""
+        raw = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = raw.split("\n")
+        if lines:
+            first = lines[0].strip()
+            if first.startswith(SERVES_TAG_PREFIX) and first.endswith(SERVES_TAG_SUFFIX):
+                # Try to parse number between prefix and suffix
+                try:
+                    inside = first[len(SERVES_TAG_PREFIX):-len(SERVES_TAG_SUFFIX)].strip()
+                    val = int(inside)
+                    if val > 0:
+                        return val, "\n".join(lines[1:]).lstrip("\n")
+                except Exception:
+                    pass
+        return None, raw
 
     # ---------- ingredients helpers ----------
     def _rows_from_text(ingredients_text: str) -> List[Dict[str, str]]:
@@ -271,7 +306,7 @@ def render():
             unsafe_allow_html=True,
         )
 
-    # Autosize helper for text_area rows
+    # Autosize helper for text_area rows (visual min height)
     def _auto_rows(current_text: str, base: int = 6, max_rows: int = 24) -> int:
         lines = max(1, (current_text or "").count("\n") + 1)
         return max(base, min(lines + 1, max_rows))
@@ -292,9 +327,8 @@ def render():
         ss.cb_mode = "add"
         ss.cb_selected_id = None
         ss.cb_confirm_delete_id = None
-        # reset ingredients editor state
+        # reset ingredients editor + add instructions state
         st.session_state.pop("add_ing_rows", None)
-        # reset add instructions state
         st.session_state.pop("add_instructions", None)
 
     def _back_to_list():
@@ -393,23 +427,26 @@ def render():
 
                         ingredients_text = _text_from_rows(add_rows)
 
-                        # Try to store servings if DB supports it
+                        # Always embed servings tag into instructions (for fallback display)
+                        instructions_to_save = _embed_servings_in_text(instructions.strip(), int(servings_val))
+
+                        # Try to store servings separately if DB supports it
                         try:
                             add_recipe(
                                 title=title.strip(),
                                 ingredients=ingredients_text,
-                                instructions=instructions.strip(),
+                                instructions=instructions_to_save,
                                 image_bytes=img_bytes,
                                 image_mime=img_mime,
                                 image_filename=img_name,
                                 servings=int(servings_val),
                             )
                         except TypeError:
-                            # Fallback: call without servings if the DB API doesn't accept it
+                            # Fallback: call without servings param
                             add_recipe(
                                 title=title.strip(),
                                 ingredients=ingredients_text,
-                                instructions=instructions.strip(),
+                                instructions=instructions_to_save,
                                 image_bytes=img_bytes,
                                 image_mime=img_mime,
                                 image_filename=img_name,
@@ -446,8 +483,13 @@ def render():
         rtitle = _normalize_title(recipe) or "Untitled"
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
         ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
-        rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
-        rserv = _extract_servings(recipe)
+        rinstr_raw = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
+
+        # Prefer explicit field; else parse from instructions tag
+        rserv_field = _extract_servings_field(recipe)
+        rserv_tag, rinstr_clean = _extract_servings_from_text(rinstr_raw)
+        rserv = rserv_field if rserv_field is not None else rserv_tag
+        rinstr = rinstr_clean  # show instructions without the tag
 
         # Title only: bold + larger font
         safe_title = html.escape(rtitle)
@@ -466,7 +508,7 @@ def render():
         else:
             st.caption("No image uploaded.")
 
-        # Servings sentence directly UNDER the image (always check and show if available)
+        # Servings sentence directly UNDER the image
         if rserv is not None:
             st.markdown(f"**Serves for {rserv} {'people' if rserv != 1 else 'person'}.**")
 
@@ -531,8 +573,13 @@ def render():
         rtitle = _normalize_title(recipe)
         orig_ing_text = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
-        rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
-        rserv = _extract_servings(recipe) or 2  # default selection if missing
+        rinstr_raw = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
+
+        # Seed servings and clean instructions
+        rserv_field = _extract_servings_field(recipe)
+        rserv_tag, rinstr_clean = _extract_servings_from_text(rinstr_raw)
+        rserv = rserv_field if rserv_field is not None else (rserv_tag or 2)  # default 2 if missing
+        rinstr_init = rinstr_clean
 
         st.subheader(f"Edit: {rtitle or 'Untitled'}")
 
@@ -575,9 +622,9 @@ def render():
         edit_rows = _ingredients_table_editor("edit_ing")
 
         # Instructions (auto-sized)
-        current_edit_instr = st.session_state.get("edit_instructions", rinstr or "")
+        current_edit_instr = st.session_state.get("edit_instructions", rinstr_init or "")
         edit_instr_rows = _auto_rows(current_edit_instr)
-        new_instr = st.text_area(
+        new_instr_visible = st.text_area(
             "Instructions",
             value=current_edit_instr,
             key="edit_instructions",
@@ -605,13 +652,16 @@ def render():
 
                         ingredients_text = _text_from_rows(edit_rows)
 
+                        # Always embed servings tag into instructions (for fallback display)
+                        instructions_to_save = _embed_servings_in_text(new_instr_visible.strip(), int(new_servings))
+
                         # Try to update with servings; fallback without if API doesn't support it
                         try:
                             update_recipe(
                                 recipe_id=rid,
                                 title=new_title.strip(),
                                 ingredients=ingredients_text,
-                                instructions=new_instr.strip(),
+                                instructions=instructions_to_save,
                                 image_bytes=img_bytes if replace else None,
                                 image_mime=img_mime if replace else None,
                                 image_filename=img_name if replace else None,
@@ -623,7 +673,7 @@ def render():
                                 recipe_id=rid,
                                 title=new_title.strip(),
                                 ingredients=ingredients_text,
-                                instructions=new_instr.strip(),
+                                instructions=instructions_to_save,
                                 image_bytes=img_bytes if replace else None,
                                 image_mime=img_mime if replace else None,
                                 image_filename=img_name if replace else None,
@@ -730,7 +780,6 @@ def render():
             components.html(
                 f"""
                 <script>
-                  const doc = window.parent.document;
                   const el = document.getElementById('sec-{first_letter}');
                   if (el) {{
                     el.scrollIntoView({{behavior: 'instant', block: 'start'}});
