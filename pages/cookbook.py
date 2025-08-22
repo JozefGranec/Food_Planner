@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 # Pillow import with helpful error if missing on Cloud
 try:
     from PIL import Image, ImageDraw, ImageFont  # image helpers
-except Exception as e:
+except Exception:
     st.error("Pillow (PIL) failed to import. Ensure 'pillow' is listed in requirements.txt.")
     raise
 
@@ -430,6 +430,10 @@ def render():
         rid = _get_id(recipe)
         rtitle = _normalize_title(recipe) or "Untitled"
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
+        # 🔧 Convert memoryview->bytes for Postgres BYTEA
+        if isinstance(rimg, memoryview):
+            rimg = rimg.tobytes()
+
         ringing = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
         serves_val = 0
@@ -523,6 +527,10 @@ def render():
         rtitle = _normalize_title(recipe)
         orig_ing_text = recipe.get("ingredients", "") if isinstance(recipe, dict) else ""
         rimg = recipe.get("image_bytes") if isinstance(recipe, dict) else None
+        # 🔧 Convert memoryview->bytes for Postgres BYTEA
+        if isinstance(rimg, memoryview):
+            rimg = rimg.tobytes()
+
         rinstr = recipe.get("instructions", "") if isinstance(recipe, dict) else ""
         serves_existing = 0
         if isinstance(recipe, dict):
