@@ -131,3 +131,254 @@ def get_recipe(recipe_id: int) -> Optional[Dict[str, Any]]:
                    image_filename, serves, created_at, updated_at
             FROM recipes WHERE id = ?;
             """,
+            (recipe_id,),
+        )
+    row = cur.fetchone()
+    cur.close()
+    if not row:
+        return None
+
+    if isinstance(row, sqlite3.Row):
+        d = dict(row)
+    else:
+        d = {
+            "id": row[0],
+            "title": row[1],
+            "ingredients": row[2],
+            "instructions": row[3],
+            "image_bytes": row[4],
+            "image_mime": row[5],
+            "image_filename": row[6],
+            "serves": row[7],
+            "created_at": row[8],
+            "updated_at": row[9],
+        }
+    d.setdefault("servings", d.get("serves", 0))
+    return d
+
+
+def update_recipe(
+    *,
+    recipe_id: int,
+    title: Optional[str] = None,
+    ingredients: Optional[str] = None,
+    instructions: Optional[str] = None,
+    image_bytes: Optional[bytes] = None,
+    image_mime: Optional[str] = None,
+    image_filename: Optional[str] = None,
+    keep_existing_image: bool = True,
+    serves: Optional[int] = None,
+    servings: Optional[int] = None,  # compatibility
+) -> None:
+    con = _conn()
+    cur = con.cursor()
+    eng = _engine()
+
+    sets: List[str] = []
+    params: List[Any] = []
+
+    if title is not None:
+        sets.append("title = %s" if eng == "postgres" else "title = ?")
+        params.append(title.strip())
+
+    if ingredients is not None:
+        sets.append("ingredients = %s" if eng == "postgres" else "ingredients = ?")
+        params.append(ingredients)
+
+    if instructions is not None:
+        sets.append("instructions = %s" if eng == "postgres" else "instructions = ?")
+        params.append(instructions)
+
+    t_serves = serves if serves is not None else servings
+    if t_serves is not None:
+        sets.append("serves = %s" if eng == "postgres" else "serves = ?")
+        params.append(_to_int(t_serves, 0))
+
+    if keep_existing_image:
+        if image_bytes is not None:
+            sets.append("image_bytes = %s" if eng == "postgres" else "image_bytes = ?")
+            params.append(_pg_bin(image_bytes) if eng == "postgres" else image_bytes)
+        if image_mime is not None:
+            sets.append("image_mime = %s" if eng == "postgres" else "image_mime = ?")
+            params.append(image_mime)
+        if image_filename is not None:
+            sets.append("image_filename = %s" if eng == "postgres" else "image_filename = ?")
+            params.append(image_filename)
+    else:
+        sets += [
+            "image_bytes = %s" if eng == "postgres" else "image_bytes = ?",
+            "image_mime = %s" if eng == "postgres" else "image_mime = ?",
+            "image_filename = %s" if eng == "postgres" else "image_filename = ?",
+        ]
+        params += [
+            _pg_bin(image_bytes) if (eng == "postgres" and image_bytes is not None) else image_bytes,
+            image_mime,
+            image_filename,
+        ]
+
+    if eng == "postgres":
+        sets.append("updated_at = NOW()")
+        params.append(recipe_id)
+        sql = f"UPDATE recipes SET {', '.join(sets)} WHERE id = %s;"
+    else:
+        sets.append("updated_at = ?")
+        params.append(sqlite3_datetime_now())
+        params.append(recipe_id)
+        sql = f"UPDATE recipes SET {', '.join(sets)} WHERE id = ?;"
+
+    cur.execute(sql, tuple(params))
+    con.commit()
+    cur.close()
+
+
+def delete_recipe(recipe_id: int) -> None:
+    con = _conn()
+    cur = con.cursor()
+    if _engine() == "postgres":
+        cur.execute("DELETE FROM recipes WHERE id = %s;", (recipe_id,))
+    else:
+        cur.execute("DELETE FROM recipes WHERE id = ?;", (recipe_id,))
+    con.commit()
+    cur.close()
+
+
+def count_recipes() -> int:
+    con = _conn()
+    cur = con.cursor()
+    cur.execute("SELECT COUNT(*) FROM recipes;")
+    row = cur.fetchone()
+    cur.close()
+    return int(row[0]) if row else 0
+
+
+# ---------- Diagnostics (used by DB Status page) ----------
+def get_backend_info() -> dict:
+    return {"engine": _engine(), "dsn": _DB.get("dsn"), "path": _DB.get("path")}
+
+def ping() -> bool:
+    try:
+        c = _conn().cursor()
+        c.execute("SELECT 1;")
+        c.fetchone()
+        c.close()
+        return True
+    except Exception:
+        return False
+
+def self_test_write_read_delete() -> dict:
+    try:
+        nid = add_recipe(title="__db_self_test__", ingredients="", instructions="", serves=1)
+        ok = bool(get_recipe(nid) and get_recipe(nid)["id"] == nid)
+        delete_recipe(nid)
+        return {"ok": ok, "id": nid, "error": None}
+    except Exception as e:
+        return {"ok": False, "id": None, "error": str(e)}
+
+
+# ---------- Internals ----------
+def _engine() -> str:
+    return _DB.get("engine") or "sqlite"
+
+def _conn():
+    if not _DB.get("conn"):
+        _init_sqlite("food.sqlite3")
+        _ensure_schema()
+    return _DB["conn"]
+
+def _ensure_schema() -> None:
+    con = _conn()
+    cur = con.cursor()
+    if _engine() == "postgres":
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recipes (
+              id SERIAL PRIMARY KEY,
+              title TEXT NOT NULL,
+              ingredients TEXT,
+              instructions TEXT,
+              image_bytes BYTEA,
+              image_mime TEXT,
+              image_filename TEXT,
+              serves INTEGER DEFAULT 0,
+              created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+              updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+    else:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recipes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL,
+              ingredients TEXT,
+              instructions TEXT,
+              image_bytes BLOB,
+              image_mime TEXT,
+              image_filename TEXT,
+              serves INTEGER DEFAULT 0,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+    con.commit()
+    cur.close()
+
+def _looks_like_pg(url: Optional[str]) -> bool:
+    return bool(url and "postgres" in url.lower())
+
+def _looks_like_pg_parts(parts: Dict[str, Any]) -> bool:
+    ks = {k.lower() for k in parts.keys()}
+    return any(k in ks for k in ("user", "username", "password", "host", "port", "dbname", "database"))
+
+def _build_pg_dsn(url: Optional[str], parts: Dict[str, Any]) -> Optional[str]:
+    if url:
+        return url  # let psycopg2 parse it
+    user = parts.get("user") or parts.get("username")
+    pwd = parts.get("password")
+    host = parts.get("host", "localhost")
+    port = parts.get("port", 5432)
+    dbn = parts.get("dbname") or parts.get("database")
+    ssl = parts.get("sslmode")
+    if not (user and pwd and dbn):
+        return None
+    dsn = f"postgresql://{user}:{pwd}@{host}:{port}/{dbn}"
+    if ssl:
+        dsn += f"?sslmode={ssl}"
+    return dsn
+
+def _init_postgres(url: Optional[str], parts: Dict[str, Any]) -> None:
+    # If PG was requested but driver missing, raise loudly so you don't silently fall back.
+    if psycopg2 is None:
+        raise RuntimeError("Postgres requested but 'psycopg2-binary' is not installed.")
+    dsn = _build_pg_dsn(url, parts)
+    if not dsn:
+        # No usable credentials → fallback to SQLite
+        _init_sqlite(parts.get("db_path") or "food.sqlite3")
+        return
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = False
+    _DB.update({"engine": "postgres", "conn": conn, "dsn": dsn, "path": None})
+
+def _init_sqlite(path: str) -> None:
+    folder = os.path.dirname(path)
+    if folder and not os.path.exists(folder):
+        os.makedirs(folder, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    _DB.update({"engine": "sqlite", "conn": conn, "dsn": None, "path": path})
+
+def _to_int(v: Any, default: int = 0) -> int:
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+def _pg_bin(b: Optional[bytes]):
+    # Wraps bytes for PG; safe no-op for SQLite
+    return None if b is None else (psycopg2.Binary(b) if psycopg2 else b)
+
+def sqlite3_datetime_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
